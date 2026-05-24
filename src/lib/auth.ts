@@ -47,7 +47,21 @@ export async function resolveAccessToken(
     apiBaseUrl: deps.apiBaseUrl,
     scopes: DEFAULT_OAUTH_SCOPES,
     onAuthorizeUrl: (url) =>
-      log("info", `openclaw-deck: open ${url} to sign in`),
+      log(
+        "info",
+        [
+          "",
+          "─".repeat(72),
+          "openclaw-deck: sign in to authorize this gateway.",
+          "Open this URL in a browser, complete the deck sign-in, and the",
+          "tool call will resume automatically once the loopback callback",
+          "fires:",
+          "",
+          `  ${url}`,
+          "",
+          "─".repeat(72),
+        ].join("\n"),
+      ),
   });
   await deps.tokenStore.save(result);
   return result.access_token;

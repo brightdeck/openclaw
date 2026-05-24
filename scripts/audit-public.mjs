@@ -17,6 +17,11 @@ const FORBIDDEN = [
   /sk_(live|test)_[A-Za-z0-9]{16,}/,
   /AIza[0-9A-Za-z\-_]{35}/,
   /-----BEGIN\s+[A-Z ]*PRIVATE KEY-----/,
+  // Absolute home paths — block accidental leakage of dev machine paths
+  /\/Users\/[A-Za-z0-9._-]+\//,
+  /\/home\/[A-Za-z0-9._-]+\//,
+  /C:\\Users\\[A-Za-z0-9._-]+\\/,
+  /(?:^|[\s"'=`(])~\//,
 ];
 
 const files = execSync("git ls-files", { encoding: "utf8" })

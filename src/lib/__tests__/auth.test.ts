@@ -3,10 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAccessToken } from "../auth.js";
 import { createMemoryTokenStore } from "../token-store.js";
 
-vi.mock("node:child_process", () => ({
-  spawn: vi.fn(() => ({ unref: vi.fn() })),
-}));
-
 const realFetch = globalThis.fetch;
 
 function installFetchMock(
@@ -120,9 +116,8 @@ describe("resolveAccessToken", () => {
       apiBaseUrl: "https://api.brightdeck.ai",
       tokenStore,
       log: (level, msg) => {
-        if (msg.startsWith("openclaw-deck: open ")) {
-          capturedUrl = msg.slice("openclaw-deck: open ".length).split(" ")[0]!;
-        }
+        const m = /(https?:\/\/\S+)/.exec(msg);
+        if (m && !capturedUrl) capturedUrl = m[1]!;
         log(level, msg);
       },
     });

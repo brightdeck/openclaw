@@ -7,10 +7,6 @@ import {
   startOAuth,
 } from "../oauth.js";
 
-vi.mock("node:child_process", () => ({
-  spawn: vi.fn(() => ({ unref: vi.fn() })),
-}));
-
 // Route fetches to ``apiBaseUrl/oauth/*`` through a mock; pass loopback
 // (``127.0.0.1`` / ``localhost``) fetches through to the real fetch so the
 // test can simulate the browser hitting our callback server.

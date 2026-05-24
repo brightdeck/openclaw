@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 
 import { DECK_API_BASE_URL } from "../config.js";
@@ -53,7 +52,6 @@ export async function startOAuth(opts: OAuthOptions): Promise<OAuthResult> {
 
     const urlStr = authorizeUrl.toString();
     opts.onAuthorizeUrl?.(urlStr);
-    openBrowser(urlStr);
 
     const { code, returnedState } = await codePromise;
     if (returnedState !== state) {
@@ -167,16 +165,3 @@ async function startCallbackServer(): Promise<CallbackServerHandle> {
   };
 }
 
-function openBrowser(url: string): void {
-  const cmd =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "explorer"
-        : "xdg-open";
-  try {
-    spawn(cmd, [url], { stdio: "ignore", detached: true }).unref();
-  } catch {
-    // If we can't launch a browser, the gateway log still has the URL.
-  }
-}

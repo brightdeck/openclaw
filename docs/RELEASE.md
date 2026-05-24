@@ -167,8 +167,10 @@ openclaw plugins inspect openclaw-deck --runtime --json
 openclaw call openclaw-deck/deck_list_presentations
 ```
 
-The first call triggers the OAuth dance in the browser; subsequent
-calls within the access-token TTL skip it.
+The first call prints a sign-in URL to the gateway log inside the
+`openclaw-deck: sign in to authorize` banner. Click it to complete the
+OAuth dance; subsequent calls within the access-token TTL skip it.
+(The plugin does not auto-open the browser — see README.md.)
 
 ### 11. Announce
 
