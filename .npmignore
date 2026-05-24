@@ -1,0 +1,10 @@
+src/
+tsconfig.json
+.eslintrc*
+eslint.config*
+vitest.config*
+*.test.ts
+scripts/
+.github/
+CONTRIBUTING.md
+SECURITY.md

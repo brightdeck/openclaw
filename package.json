@@ -1,0 +1,73 @@
+{
+  "name": "@brightdeck/openclaw-deck",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin for deck — manage presentations on api.brightdeck.ai",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist",
+    "audit-public": "node scripts/audit-public.mjs"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    },
+    "build": {
+      "openclawVersion": "2026.3.24-beta.2",
+      "pluginSdkVersion": "2026.3.24-beta.2"
+    }
+  },
+  "dependencies": {
+    "typebox": "^1.1.38"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.17"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^22.10.0",
+    "eslint": "^9.0.0",
+    "msw": "^2.0.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.59.4",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "license": "Apache-2.0",
+  "author": "Brightdeck",
+  "homepage": "https://github.com/brightdeck/openclaw#readme",
+  "bugs": "https://github.com/brightdeck/openclaw/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/brightdeck/openclaw.git"
+  },
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "deck",
+    "presentations",
+    "brightdeck",
+    "mcp"
+  ]
+}
