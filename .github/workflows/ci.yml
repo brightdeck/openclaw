@@ -21,4 +21,5 @@ jobs:
       - run: pnpm run audit-public
       - run: pnpm lint
       - run: pnpm build
+      - run: pnpm validate
       - run: pnpm test

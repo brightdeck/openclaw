@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 
 import { makeProxyExecute } from "../lib/tool-helper.js";
-import type { RegisterToolFn } from "./types.js";
+import type { DeckToolDefinition } from "./types.js";
 
 const TOOL_NAME = "deck_list_permissions";
 
@@ -22,15 +22,15 @@ const ParametersSchema = Type.Object({
   ),
 });
 
-export const registerListPermissionsTool: RegisterToolFn = (api, deps) => {
-  api.registerTool({
-    name: TOOL_NAME,
-    label: "List permissions",
-    description:
-      "Use this when the user wants to see collaborators on a deck. Requires " +
-      "editor or higher access and returns permission ids, roles, user emails, " +
-      "and pagination metadata.",
-    parameters: ParametersSchema,
-    execute: makeProxyExecute(TOOL_NAME, deps),
-  });
+export const listPermissionsToolDefinition: DeckToolDefinition<
+  typeof ParametersSchema
+> = {
+  name: TOOL_NAME,
+  label: "List permissions",
+  description:
+    "Use this when the user wants to see collaborators on a deck. Requires " +
+    "editor or higher access and returns permission ids, roles, user emails, " +
+    "and pagination metadata.",
+  parameters: ParametersSchema,
+  execute: makeProxyExecute(TOOL_NAME),
 };

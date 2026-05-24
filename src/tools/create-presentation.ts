@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 
 import { makeProxyExecute } from "../lib/tool-helper.js";
-import type { RegisterToolFn } from "./types.js";
+import type { DeckToolDefinition } from "./types.js";
 
 const TOOL_NAME = "deck_create_presentation";
 
@@ -98,19 +98,16 @@ const ParametersSchema = Type.Object({
   ),
 });
 
-export const registerCreatePresentationTool: RegisterToolFn = (api, deps) => {
-  api.registerTool({
-    name: TOOL_NAME,
-    label: "Generate presentation",
-    description:
-      "Use this when the user wants to generate a complete presentation " +
-      "from a prompt and any base64 reference files. Returns a live " +
-      "preview URL the user can open immediately to watch slides appear " +
-      "over 30-120 seconds. Generation continues in the background.",
-    parameters: ParametersSchema,
-    // The call itself returns in a few seconds (the server validates
-    // attachments synchronously before kicking the background task), but
-    // large attachments push that past the 30s default.
-    execute: makeProxyExecute(TOOL_NAME, deps, { timeoutMs: 180_000 }),
-  });
+export const createPresentationToolDefinition: DeckToolDefinition<
+  typeof ParametersSchema
+> = {
+  name: TOOL_NAME,
+  label: "Generate presentation",
+  description:
+    "Use this when the user wants to generate a complete presentation " +
+    "from a prompt and any base64 reference files. Returns a live " +
+    "preview URL the user can open immediately to watch slides appear " +
+    "over 30-120 seconds. Generation continues in the background.",
+  parameters: ParametersSchema,
+  execute: makeProxyExecute(TOOL_NAME, { timeoutMs: 180_000 }),
 };

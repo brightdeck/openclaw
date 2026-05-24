@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 
 import { makeProxyExecute } from "../lib/tool-helper.js";
-import type { RegisterToolFn } from "./types.js";
+import type { DeckToolDefinition } from "./types.js";
 
 const TOOL_NAME = "deck_create_blank_presentation";
 
@@ -26,18 +26,15 @@ const ParametersSchema = Type.Object({
   ),
 });
 
-export const registerCreateBlankPresentationTool: RegisterToolFn = (
-  api,
-  deps,
-) => {
-  api.registerTool({
-    name: TOOL_NAME,
-    label: "Create blank presentation",
-    description:
-      "Use this when the user wants an empty editable deck rather than an " +
-      "AI-generated one. Creates from the bundled template and returns the " +
-      "deck id, filename, slide count, and view URL.",
-    parameters: ParametersSchema,
-    execute: makeProxyExecute(TOOL_NAME, deps),
-  });
+export const createBlankPresentationToolDefinition: DeckToolDefinition<
+  typeof ParametersSchema
+> = {
+  name: TOOL_NAME,
+  label: "Create blank presentation",
+  description:
+    "Use this when the user wants an empty editable deck rather than an " +
+    "AI-generated one. Creates from the bundled template and returns the " +
+    "deck id, filename, slide count, and view URL.",
+  parameters: ParametersSchema,
+  execute: makeProxyExecute(TOOL_NAME),
 };

@@ -1,9 +1,14 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import type { TSchema } from "typebox";
+import type { ToolPluginToolDefinition } from "openclaw/plugin-sdk/tool-plugin";
 
-import type { ProxyToolDeps } from "../lib/tool-helper.js";
+import type { PluginConfig } from "../lib/tool-helper.js";
 
-/** Per-tool registration callback signature. */
-export type RegisterToolFn = (
-  api: OpenClawPluginApi,
-  deps: ProxyToolDeps,
-) => void;
+/**
+ * Shape of a tool definition fed to ``defineToolPlugin``'s ``tools`` factory.
+ * Each tool file exports one of these; ``src/index.ts`` calls ``tool(<def>)``
+ * inside ``tools: (tool) => [...]``.
+ */
+export type DeckToolDefinition<S extends TSchema> = ToolPluginToolDefinition<
+  PluginConfig,
+  S
+>;

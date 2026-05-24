@@ -1,9 +1,69 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { PLUGIN_ID } from "../../config.js";
+import type { OAuthResult } from "../oauth.js";
+import {
+  createMemoryTokenStore,
+  type TokenStore,
+} from "../token-store.js";
 import { makeProxyExecute } from "../tool-helper.js";
-import { createMemoryTokenStore } from "../token-store.js";
 
 const originalFetch = globalThis.fetch;
+const STORAGE_KEY = "oauth";
+
+function freshTokenStore(): TokenStore {
+  const now = Math.floor(Date.now() / 1000);
+  return createMemoryTokenStore({
+    access_token: "at-fresh",
+    refresh_token: "rt-fresh",
+    expires_in: 600,
+    scope: "presentation:read",
+    obtained_at: now,
+  });
+}
+
+/**
+ * Wrap an in-memory token store as a fake ``context.api`` whose keyed-store
+ * delegates load/save/clear to the memory store. The plugin's
+ * ``createTokenStore`` only touches ``lookup``, ``register``, and ``delete``
+ * — the other methods are mocked as no-ops.
+ */
+function fakeApiFor(tokenStore: TokenStore) {
+  return {
+    id: PLUGIN_ID,
+    pluginConfig: { apiBaseUrl: "https://api.brightdeck.ai" },
+    runtime: {
+      state: {
+        openKeyedStore: vi.fn(() => ({
+          lookup: vi.fn(async (key: string) =>
+            key === STORAGE_KEY ? await tokenStore.load() : undefined,
+          ),
+          register: vi.fn(async (key: string, value: OAuthResult) => {
+            if (key === STORAGE_KEY) await tokenStore.save(value);
+          }),
+          registerIfAbsent: vi.fn(),
+          consume: vi.fn(),
+          delete: vi.fn(async (key: string) => {
+            if (key === STORAGE_KEY) await tokenStore.clear();
+            return true;
+          }),
+          entries: vi.fn(),
+          clear: vi.fn(),
+        })),
+      },
+    },
+    registerTool: vi.fn(),
+  };
+}
+
+function callContext(tokenStore: TokenStore) {
+  return {
+    api: fakeApiFor(tokenStore) as never,
+    toolCallId: "call-1",
+  };
+}
+
+const CONFIG = { apiBaseUrl: "https://api.brightdeck.ai" } as const;
 
 describe("makeProxyExecute", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -16,17 +76,6 @@ describe("makeProxyExecute", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
   });
-
-  function freshTokenStore() {
-    const now = Math.floor(Date.now() / 1000);
-    return createMemoryTokenStore({
-      access_token: "at-fresh",
-      refresh_token: "rt-fresh",
-      expires_in: 600,
-      scope: "presentation:read",
-      obtained_at: now,
-    });
-  }
 
   it("happy path: forwards JSON-RPC envelope and returns { content, details }", async () => {
     fetchMock.mockResolvedValueOnce(
@@ -43,11 +92,12 @@ describe("makeProxyExecute", () => {
       ),
     );
 
-    const execute = makeProxyExecute("deck_list_presentations", {
-      apiBaseUrl: "https://api.brightdeck.ai",
-      tokenStore: freshTokenStore(),
-    });
-    const out = await execute("call-1", { skip: 0, limit: 10 });
+    const execute = makeProxyExecute("deck_list_presentations");
+    const out = await execute(
+      { skip: 0, limit: 10 },
+      CONFIG,
+      callContext(freshTokenStore()),
+    );
     expect(out.content).toEqual([{ type: "text", text: "ok" }]);
     expect(out.details).toEqual({ items: [] });
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -64,11 +114,12 @@ describe("makeProxyExecute", () => {
         { status: 200 },
       ),
     );
-    const execute = makeProxyExecute("deck_get_share_link", {
-      apiBaseUrl: "https://api.brightdeck.ai",
-      tokenStore: freshTokenStore(),
-    });
-    const out = await execute("c", { presentation_id: "x" });
+    const execute = makeProxyExecute("deck_get_share_link");
+    const out = await execute(
+      { presentation_id: "x" },
+      CONFIG,
+      callContext(freshTokenStore()),
+    );
     expect(out.details).toBeNull();
   });
 
@@ -78,11 +129,6 @@ describe("makeProxyExecute", () => {
 
     fetchMock
       .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }))
-      // The auth resolver sees the cleared store and starts an OAuth dance —
-      // but our token still satisfies the freshness check because we re-save
-      // via the resolver only when storage is empty. To keep this test
-      // hermetic we re-seed the store before the second attempt by spying on
-      // clear() and re-injecting tokens.
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -109,17 +155,17 @@ describe("makeProxyExecute", () => {
       });
     });
 
-    const execute = makeProxyExecute("deck_list_presentations", {
-      apiBaseUrl: "https://api.brightdeck.ai",
-      tokenStore,
-    });
-    const out = await execute("c", { skip: 0, limit: 10 });
+    const execute = makeProxyExecute("deck_list_presentations");
+    const out = await execute(
+      { skip: 0, limit: 10 },
+      CONFIG,
+      callContext(tokenStore),
+    );
     expect(out.content[0]?.text).toBe("retry ok");
     expect(out.details).toEqual({ ok: true });
     expect(clearSpy).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
-    // Second call used the cleared-and-reseeded access token.
     const secondHeaders = fetchMock.mock.calls[1]![1].headers;
     expect(secondHeaders.Authorization).toBe("Bearer at-after-clear");
   });
@@ -140,11 +186,12 @@ describe("makeProxyExecute", () => {
       .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }))
       .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }));
 
-    const execute = makeProxyExecute("deck_list_presentations", {
-      apiBaseUrl: "https://api.brightdeck.ai",
-      tokenStore,
-    });
-    const err = await execute("c", { skip: 0, limit: 10 }).catch((e) => e);
+    const execute = makeProxyExecute("deck_list_presentations");
+    const err = await execute(
+      { skip: 0, limit: 10 },
+      CONFIG,
+      callContext(tokenStore),
+    ).catch((e) => e);
     expect(err.code).toBe("http.401");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -163,11 +210,12 @@ describe("makeProxyExecute", () => {
         { status: 200 },
       ),
     );
-    const execute = makeProxyExecute("deck_get_presentation", {
-      apiBaseUrl: "https://api.brightdeck.ai",
-      tokenStore: freshTokenStore(),
-    });
-    const err = await execute("c", { presentation_id: "x" }).catch((e) => e);
+    const execute = makeProxyExecute("deck_get_presentation");
+    const err = await execute(
+      { presentation_id: "x" },
+      CONFIG,
+      callContext(freshTokenStore()),
+    ).catch((e) => e);
     expect(err.code).toBe("validation.invalid_format");
     expect(fetchMock).toHaveBeenCalledOnce();
   });

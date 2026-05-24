@@ -1,83 +1,98 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { PLUGIN_ID } from "../../config.js";
+import type { OAuthResult } from "../../lib/oauth.js";
 import { createMemoryTokenStore } from "../../lib/token-store.js";
-import { registerCreatePresentationTool } from "../create-presentation.js";
-import { registerExportPdfUrlTool } from "../export-pdf-url.js";
-import { registerExportPptxUrlTool } from "../export-pptx-url.js";
-import { registerListPresentationsTool } from "../list-presentations.js";
-import { registerRevokePermissionTool } from "../revoke-permission.js";
+import { createPresentationToolDefinition } from "../create-presentation.js";
+import { exportPdfUrlToolDefinition } from "../export-pdf-url.js";
+import { exportPptxUrlToolDefinition } from "../export-pptx-url.js";
+import { listPresentationsToolDefinition } from "../list-presentations.js";
+import { revokePermissionToolDefinition } from "../revoke-permission.js";
 
-interface RegisteredTool {
-  name: string;
-  label: string;
-  description: string;
-  parameters: { type: string; properties: Record<string, unknown> };
-  execute: (
-    toolCallId: string,
-    params: unknown,
-    signal?: AbortSignal,
-  ) => Promise<{ content: Array<{ text: string }>; details: unknown }>;
+interface ParamsShape {
+  type: string;
+  properties: Record<string, unknown>;
 }
 
-function captureToolRegistration(
-  register: (api: never, deps: never) => void,
-): RegisteredTool {
-  const captured: { tool?: RegisteredTool } = {};
-  const api = {
-    registerTool: (tool: unknown) => {
-      captured.tool = tool as RegisteredTool;
+const SEED_TOKEN: OAuthResult = {
+  access_token: "at-1",
+  refresh_token: "rt-1",
+  expires_in: 600,
+  scope: "presentation:read",
+  obtained_at: Math.floor(Date.now() / 1000),
+};
+
+/**
+ * Build a fake api whose keyed-store delegates to ``createMemoryTokenStore``.
+ * Mirrors what the runtime would expose to a tool's ``execute`` via
+ * ``context.api``.
+ */
+function createFakeApi(seed: OAuthResult | null = SEED_TOKEN) {
+  const memStore = createMemoryTokenStore(seed);
+  const STORAGE_KEY = "oauth";
+  return {
+    id: PLUGIN_ID,
+    pluginConfig: { apiBaseUrl: "https://api.brightdeck.ai" },
+    runtime: {
+      state: {
+        openKeyedStore: vi.fn(() => ({
+          lookup: vi.fn(async (key: string) =>
+            key === STORAGE_KEY ? await memStore.load() : undefined,
+          ),
+          register: vi.fn(async (key: string, value: OAuthResult) => {
+            if (key === STORAGE_KEY) await memStore.save(value);
+          }),
+          registerIfAbsent: vi.fn(),
+          consume: vi.fn(),
+          delete: vi.fn(async (key: string) => {
+            if (key === STORAGE_KEY) await memStore.clear();
+            return true;
+          }),
+          entries: vi.fn(),
+          clear: vi.fn(),
+        })),
+      },
     },
+    registerTool: vi.fn(),
   };
-  register(
-    api as never,
-    {
-      apiBaseUrl: "https://api.brightdeck.ai",
-      tokenStore: createMemoryTokenStore({
-        access_token: "at-1",
-        refresh_token: "rt-1",
-        expires_in: 600,
-        scope: "presentation:read",
-        obtained_at: Math.floor(Date.now() / 1000),
-      }),
-    } as never,
-  );
-  if (!captured.tool) throw new Error("tool not registered");
-  return captured.tool;
 }
 
-describe("tool registration metadata", () => {
+describe("tool definition metadata", () => {
   it("deck_list_presentations exposes skip/limit and a TypeBox object schema", () => {
-    const t = captureToolRegistration(registerListPresentationsTool);
+    const t = listPresentationsToolDefinition;
     expect(t.name).toBe("deck_list_presentations");
-    expect(t.parameters.type).toBe("object");
-    expect(t.parameters.properties).toHaveProperty("skip");
-    expect(t.parameters.properties).toHaveProperty("limit");
+    const params = t.parameters as ParamsShape;
+    expect(params.type).toBe("object");
+    expect(params.properties).toHaveProperty("skip");
+    expect(params.properties).toHaveProperty("limit");
   });
 
   it("deck_revoke_permission requires permission_id, not user_id", () => {
-    const t = captureToolRegistration(registerRevokePermissionTool);
-    expect(t.parameters.properties).toHaveProperty("permission_id");
-    expect(t.parameters.properties).not.toHaveProperty("user_id");
+    const params = revokePermissionToolDefinition.parameters as ParamsShape;
+    expect(params.properties).toHaveProperty("permission_id");
+    expect(params.properties).not.toHaveProperty("user_id");
   });
 
-  it("deck_export_pptx_url and deck_export_pdf_url both expect a presentation_id", () => {
-    for (const reg of [registerExportPptxUrlTool, registerExportPdfUrlTool]) {
-      const t = captureToolRegistration(reg);
-      expect(t.parameters.properties).toHaveProperty("presentation_id");
+  it("deck_export_pptx_url and deck_export_pdf_url both expect presentation_id", () => {
+    for (const def of [exportPptxUrlToolDefinition, exportPdfUrlToolDefinition]) {
+      const params = def.parameters as ParamsShape;
+      expect(params.properties).toHaveProperty("presentation_id");
     }
   });
 
   it("deck_create_presentation accepts attachments and prompt", () => {
-    const t = captureToolRegistration(registerCreatePresentationTool);
-    expect(t.parameters.properties).toHaveProperty("prompt");
-    expect(t.parameters.properties).toHaveProperty("attachments");
-    expect(t.parameters.properties).toHaveProperty("num_slides");
+    const t = createPresentationToolDefinition;
+    const params = t.parameters as ParamsShape;
+    expect(params.properties).toHaveProperty("prompt");
+    expect(params.properties).toHaveProperty("attachments");
+    expect(params.properties).toHaveProperty("num_slides");
     expect(t.description).toMatch(/live\s+preview/i);
   });
 });
 
 describe("tool execute (proxy) — happy path forwarded to /mcp", () => {
   const realFetch = globalThis.fetch;
+
   it("forwards arguments through DeckClient", async () => {
     const fetchMock = vi.fn(
       async () =>
@@ -95,9 +110,19 @@ describe("tool execute (proxy) — happy path forwarded to /mcp", () => {
     );
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
     try {
-      const t = captureToolRegistration(registerListPresentationsTool);
-      const out = await t.execute("c", { skip: 0, limit: 5 });
-      expect(out.content[0]?.text).toBe("ok");
+      const def = listPresentationsToolDefinition;
+      if (!def.execute) throw new Error("expected execute on tool definition");
+
+      const api = createFakeApi();
+      const out = await def.execute(
+        { skip: 0, limit: 5 },
+        { apiBaseUrl: "https://api.brightdeck.ai" },
+        { api: api as never, toolCallId: "c" },
+      );
+
+      const result = out as { content: Array<{ text: string }> };
+      expect(result.content[0]?.text).toBe("ok");
+
       const [url, init] = fetchMock.mock.calls[0]!;
       expect(url).toBe("https://api.brightdeck.ai/mcp");
       const body = JSON.parse((init as RequestInit).body as string);

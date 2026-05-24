@@ -1,19 +1,19 @@
 import type { Static, TSchema } from "typebox";
+import type { ToolPluginExecutionContext } from "openclaw/plugin-sdk/tool-plugin";
 
+import { DECK_API_BASE_URL } from "../config.js";
 import { resolveAccessToken } from "./auth.js";
 import { DeckClient, DeckMCPError } from "./deck-client.js";
-import type { TokenStore } from "./token-store.js";
+import { createTokenStore } from "./token-store.js";
 
-export interface ProxyToolDeps {
-  apiBaseUrl: string;
-  tokenStore: TokenStore;
+export interface PluginConfig {
+  apiBaseUrl?: string;
 }
 
 export interface ProxyExecuteOptions {
   timeoutMs?: number;
 }
 
-/** Shape of a single content item the agent runtime accepts on AgentToolResult. */
 export interface ToolContentItem {
   type: "text";
   text: string;
@@ -24,37 +24,50 @@ export interface ProxyAgentToolResult {
   details: unknown;
 }
 
+export type ProxyExecute<S extends TSchema> = (
+  params: Static<S>,
+  config: PluginConfig,
+  context: ToolPluginExecutionContext,
+) => Promise<ProxyAgentToolResult>;
+
+export function resolveApiBaseUrl(
+  config: PluginConfig | undefined | null,
+): string {
+  const candidate = config?.apiBaseUrl;
+  if (typeof candidate === "string" && candidate.length > 0) {
+    return candidate;
+  }
+  return DECK_API_BASE_URL;
+}
+
 /**
- * Build an ``execute`` function compatible with ``AgentTool.execute``:
+ * Build an ``execute`` matching ``defineToolPlugin``'s signature:
  *
- *   (toolCallId, params, signal?, onUpdate?) => Promise<AgentToolResult>
+ *   (params, config, context) => Promise<ProxyAgentToolResult>
  *
- * The helper resolves an access token (refreshing or re-authorizing as
- * needed), calls ``${apiBaseUrl}/mcp`` via JSON-RPC, and maps the upstream
- * ``content`` / ``structuredContent`` to the agent runtime's
- * ``content`` / ``details`` envelope.
+ * Per call: resolve apiBaseUrl from config, open the keyed token store via
+ * ``context.api``, resolve an access token (refreshing or re-authorizing as
+ * needed), call ``${apiBaseUrl}/mcp`` via JSON-RPC, and map upstream
+ * ``content`` / ``structuredContent`` to ``content`` / ``details``.
  *
- * On HTTP 401 it clears the stored tokens and re-runs the OAuth dance once.
+ * On HTTP 401: clear stored tokens and re-run the OAuth dance once.
  */
 export function makeProxyExecute<S extends TSchema>(
   toolName: string,
-  deps: ProxyToolDeps,
   options: ProxyExecuteOptions = {},
-) {
-  return async function execute(
-    _toolCallId: string,
-    params: Static<S>,
-    signal?: AbortSignal,
-  ): Promise<ProxyAgentToolResult> {
-    signal?.throwIfAborted?.();
+): ProxyExecute<S> {
+  return async (params, config, context) => {
+    context.signal?.throwIfAborted?.();
+    const apiBaseUrl = resolveApiBaseUrl(config);
+    const tokenStore = createTokenStore(context.api);
 
     const callOnce = async (
       accessToken: string,
     ): Promise<ProxyAgentToolResult> => {
       const client = new DeckClient({
-        baseUrl: deps.apiBaseUrl,
+        baseUrl: apiBaseUrl,
         accessToken,
-        signal,
+        signal: context.signal,
         timeoutMs: options.timeoutMs,
       });
       const result = await client.callTool(
@@ -68,20 +81,17 @@ export function makeProxyExecute<S extends TSchema>(
     };
 
     const initialToken = await resolveAccessToken({
-      apiBaseUrl: deps.apiBaseUrl,
-      tokenStore: deps.tokenStore,
+      apiBaseUrl,
+      tokenStore,
     });
     try {
       return await callOnce(initialToken);
     } catch (err) {
-      // Refresh-on-401: covers server-side revocation between the cached
-      // access-token issuance and this call. Clear stored state and re-auth
-      // once — a second 401 surfaces to the caller.
       if (err instanceof DeckMCPError && err.code === "http.401") {
-        await deps.tokenStore.clear();
+        await tokenStore.clear();
         const retryToken = await resolveAccessToken({
-          apiBaseUrl: deps.apiBaseUrl,
-          tokenStore: deps.tokenStore,
+          apiBaseUrl,
+          tokenStore,
         });
         return await callOnce(retryToken);
       }

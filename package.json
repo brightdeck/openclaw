@@ -12,17 +12,18 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && openclaw plugins build --entry ./dist/index.js",
+    "validate": "openclaw plugins validate --entry ./dist/index.js",
     "watch": "tsc --watch",
     "lint": "eslint src",
     "test": "vitest run",
     "test:watch": "vitest",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist openclaw.plugin.json",
     "audit-public": "node scripts/audit-public.mjs"
   },
   "openclaw": {
     "extensions": [
-      "./src/index.ts"
+      "./dist/index.js"
     ],
     "runtimeExtensions": [
       "./dist/index.js"

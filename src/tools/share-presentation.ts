@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 
 import { makeProxyExecute } from "../lib/tool-helper.js";
-import type { RegisterToolFn } from "./types.js";
+import type { DeckToolDefinition } from "./types.js";
 
 const TOOL_NAME = "deck_share_presentation";
 
@@ -31,15 +31,15 @@ const ParametersSchema = Type.Object({
   }),
 });
 
-export const registerSharePresentationTool: RegisterToolFn = (api, deps) => {
-  api.registerTool({
-    name: TOOL_NAME,
-    label: "Share presentation",
-    description:
-      "Use this when the user wants to grant deck access by email. Existing " +
-      "users get a permission and email; new users get an invitation. Only " +
-      "owners can grant owner access.",
-    parameters: ParametersSchema,
-    execute: makeProxyExecute(TOOL_NAME, deps),
-  });
+export const sharePresentationToolDefinition: DeckToolDefinition<
+  typeof ParametersSchema
+> = {
+  name: TOOL_NAME,
+  label: "Share presentation",
+  description:
+    "Use this when the user wants to grant deck access by email. Existing " +
+    "users get a permission and email; new users get an invitation. Only " +
+    "owners can grant owner access.",
+  parameters: ParametersSchema,
+  execute: makeProxyExecute(TOOL_NAME),
 };
