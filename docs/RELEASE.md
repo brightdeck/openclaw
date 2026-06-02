@@ -88,7 +88,6 @@ clawhub package publish . \
   --version <X.Y.Z> \
   --changelog "Short summary copied from CHANGELOG.md" \
   --tags "automation,presentations,brightdeck,latest" \
-  --clawscan-note "Wraps api.brightdeck.ai MCP server. Auth via OAuth 2.1 + PKCE with loopback callback." \
   --dry-run
 ```
 
@@ -98,10 +97,10 @@ proceeding. Common dry-run failures:
 - `Fail: missing LICENSE` — the LICENSE file drifted from canonical
   Apache-2.0. Re-paste from
   https://www.apache.org/licenses/LICENSE-2.0.txt.
-- `Warn: outbound network call to api.brightdeck.ai` — expected; the
-  `--clawscan-note` covers it. If the human reviewer still flags it,
-  point them at the [SECURITY.md](../SECURITY.md) network-egress
-  disclosure.
+- `Warn: outbound network call to api.brightdeck.ai` — expected. ClawScan
+  derives this automatically; there is no publish-time note field. If the
+  human reviewer flags it, point them at the
+  [SECURITY.md](../SECURITY.md) network-egress disclosure.
 
 ### 7. Tag + push
 
@@ -128,8 +127,7 @@ clawhub package publish . \
   --owner brightdeck \
   --version <X.Y.Z> \
   --changelog "Short summary copied from CHANGELOG.md" \
-  --tags "automation,presentations,brightdeck,latest" \
-  --clawscan-note "Wraps api.brightdeck.ai MCP server. Auth via OAuth 2.1 + PKCE with loopback callback."
+  --tags "automation,presentations,brightdeck,latest"
 ```
 
 ClawScan status progresses `Pending` → `Pass` (or `Review` → `Pass`
