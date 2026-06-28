@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-06-27
+
+### Fixed
+- Plugin install from ClawHub failed (`could not create a plugin-local
+  node_modules/openclaw link`). The runtime libraries are now **bundled** into
+  `dist/index.js`, so the published package declares **no npm `dependencies`**.
+  This stops OpenClaw's staging `npm install` from materializing a real
+  `node_modules/openclaw` directory that blocked the `openclaw`
+  peer-dependency symlink. No functional change to tools or auth — the
+  SDK-based MCP client behaviour is identical.
+- The bundle no longer pulls in `ajv` (a transitive MCP-SDK dependency whose
+  JSON-schema compiler uses `new Function`), which OpenClaw's plugin security
+  scanner blocked as dynamic code execution. The SDK client is given a
+  pass-through `jsonSchemaValidator` (we map tool results ourselves and don't
+  rely on `outputSchema` validation), and the bundler stubs `ajv` out entirely.
+
 ## [0.2.0] — 2026-06-27
 
 ### Fixed

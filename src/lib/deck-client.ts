@@ -4,8 +4,32 @@ import {
   StreamableHTTPError,
 } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import type {
+  JsonSchemaValidator,
+  jsonSchemaValidator,
+} from "@modelcontextprotocol/sdk/validation/types.js";
 
 import { PLUGIN_VERSION } from "../config.js";
+
+/**
+ * No-op JSON Schema validator handed to the SDK ``Client``.
+ *
+ * The SDK only uses this to validate a tool's optional ``outputSchema``; we map
+ * results ourselves and don't depend on it. Supplying our own keeps the SDK
+ * from instantiating its default ``AjvJsonSchemaValidator``, whose ``ajv``
+ * schema compiler uses ``new Function`` — which OpenClaw's plugin security
+ * scanner blocks. Paired with an esbuild ``--alias:ajv`` stub (see the build
+ * script) so ``ajv`` never enters the bundle at all.
+ */
+const PASS_THROUGH_VALIDATOR: jsonSchemaValidator = {
+  getValidator<T>(): JsonSchemaValidator<T> {
+    return (input: unknown) => ({
+      valid: true,
+      data: input as T,
+      errorMessage: undefined,
+    });
+  },
+};
 
 export interface DeckClientOptions {
   baseUrl: string;
@@ -69,10 +93,10 @@ export class DeckClient {
     // Trailing slash → hit the canonical mounted path directly, avoiding the
     // bare-/mcp 307 that MCPPathNormalizationMiddleware rewrites server-side.
     const url = new URL(`${this.opts.baseUrl.replace(/\/+$/, "")}/mcp/`);
-    const client = new Client({
-      name: "openclaw-deck",
-      version: PLUGIN_VERSION,
-    });
+    const client = new Client(
+      { name: "openclaw-deck", version: PLUGIN_VERSION },
+      { jsonSchemaValidator: PASS_THROUGH_VALIDATOR },
+    );
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: {
         headers: { Authorization: `Bearer ${this.opts.accessToken}` },
@@ -82,14 +106,10 @@ export class DeckClient {
     try {
       // initialize + notifications/initialized + capture mcp-session-id.
       await client.connect(transport, { signal: this.opts.signal });
-      const result = (await client.callTool(
-        { name, arguments: args },
-        undefined,
-        {
-          signal: this.opts.signal,
-          timeout: this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        },
-      )) as CallToolResultLike;
+      const result = (await client.callTool({ name, arguments: args }, undefined, {
+        signal: this.opts.signal,
+        timeout: this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      })) as CallToolResultLike;
 
       if (result.isError) {
         // FastMCP tool errors come back as an isError result whose text is
@@ -143,10 +163,7 @@ function toDeckError(err: unknown): Error {
 
 function parseDeckError(text: string, fallbackMessage: string): DeckMCPError {
   const m = CODE_MESSAGE_RE.exec(text);
-  return new DeckMCPError(
-    m?.[1] ?? "unknown",
-    m?.[2]?.trim() ?? fallbackMessage,
-  );
+  return new DeckMCPError(m?.[1] ?? "unknown", m?.[2]?.trim() ?? fallbackMessage);
 }
 
 function extractText(content: unknown): string {

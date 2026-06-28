@@ -68,6 +68,18 @@ pnpm test
 
 All five steps must pass before continuing.
 
+> **Invariant — no runtime dependencies.** `pnpm build` **bundles** all third-party
+> libraries (`@modelcontextprotocol/sdk`, `typebox`, `zod`, …) into a single
+> self-contained `dist/index.js`; `openclaw` stays the only `peerDependency`. The
+> published `package.json` MUST have an empty/absent `dependencies` block. If it
+> lists any runtime dependency, OpenClaw runs `npm install` at install time, which
+> materializes a real `node_modules/openclaw` and breaks the peer-dependency
+> symlink (install fails + rolls back). Verify before publishing:
+>
+> ```bash
+> node -e "const p=require('./package.json');if(Object.keys(p.dependencies||{}).length||Object.keys(p.optionalDependencies||{}).length){console.error('FAIL: runtime dependencies present');process.exit(1)}console.log('OK: no runtime dependencies')"
+> ```
+
 ### 5. Validate against the OpenClaw SDK
 
 ```bash
