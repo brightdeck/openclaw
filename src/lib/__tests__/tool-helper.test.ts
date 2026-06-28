@@ -1,4 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Keep the real StreamableHTTPError class so deck-client.ts's instanceof check
+// matches the 401s thrown here.
+import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import { PLUGIN_ID } from "../../config.js";
 import type { OAuthResult } from "../oauth.js";
@@ -8,7 +12,44 @@ import {
 } from "../token-store.js";
 import { makeProxyExecute } from "../tool-helper.js";
 
-const originalFetch = globalThis.fetch;
+// Hoisted SDK handles shared across every per-call DeckClient. `authHeaders`
+// records the bearer of each transport instantiation, in attempt order.
+const h = vi.hoisted(() => ({
+  connect: vi.fn(),
+  callTool: vi.fn(),
+  close: vi.fn(),
+  terminateSession: vi.fn(),
+  authHeaders: [] as Array<string | undefined>,
+}));
+
+vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
+  Client: vi.fn(() => ({
+    connect: h.connect,
+    callTool: h.callTool,
+    close: h.close,
+  })),
+}));
+
+vi.mock(
+  "@modelcontextprotocol/sdk/client/streamableHttp.js",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@modelcontextprotocol/sdk/client/streamableHttp.js")
+      >();
+    return {
+      ...actual,
+      StreamableHTTPClientTransport: vi.fn((_url: URL, opts: unknown) => {
+        const headers = (
+          opts as { requestInit?: { headers?: Record<string, string> } }
+        )?.requestInit?.headers;
+        h.authHeaders.push(headers?.Authorization);
+        return { terminateSession: h.terminateSession };
+      }),
+    };
+  },
+);
+
 const STORAGE_KEY = "oauth";
 
 function freshTokenStore(): TokenStore {
@@ -66,31 +107,19 @@ function callContext(tokenStore: TokenStore) {
 const CONFIG = { apiBaseUrl: "https://api.brightdeck.ai" } as const;
 
 describe("makeProxyExecute", () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
-
   beforeEach(() => {
-    fetchMock = vi.fn();
-    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    h.connect.mockReset().mockResolvedValue(undefined);
+    h.callTool.mockReset();
+    h.close.mockReset().mockResolvedValue(undefined);
+    h.terminateSession.mockReset().mockResolvedValue(undefined);
+    h.authHeaders.length = 0;
   });
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("happy path: forwards JSON-RPC envelope and returns { content, details }", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: "1",
-          result: {
-            content: [{ type: "text", text: "ok" }],
-            structuredContent: { items: [] },
-          },
-        }),
-        { status: 200 },
-      ),
-    );
+  it("happy path: returns { content, details } from the SDK result", async () => {
+    h.callTool.mockResolvedValueOnce({
+      content: [{ type: "text", text: "ok" }],
+      structuredContent: { items: [] },
+    });
 
     const execute = makeProxyExecute("deck_list_presentations");
     const out = await execute(
@@ -100,20 +129,13 @@ describe("makeProxyExecute", () => {
     );
     expect(out.content).toEqual([{ type: "text", text: "ok" }]);
     expect(out.details).toEqual({ items: [] });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(h.callTool).toHaveBeenCalledOnce();
   });
 
   it("falls back details to null when upstream omits structuredContent", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: "1",
-          result: { content: [{ type: "text", text: "ok" }] },
-        }),
-        { status: 200 },
-      ),
-    );
+    h.callTool.mockResolvedValueOnce({
+      content: [{ type: "text", text: "ok" }],
+    });
     const execute = makeProxyExecute("deck_get_share_link");
     const out = await execute(
       { presentation_id: "x" },
@@ -127,21 +149,14 @@ describe("makeProxyExecute", () => {
     const tokenStore = freshTokenStore();
     const clearSpy = vi.spyOn(tokenStore, "clear");
 
-    fetchMock
-      .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }))
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: "1",
-            result: {
-              content: [{ type: "text", text: "retry ok" }],
-              structuredContent: { ok: true },
-            },
-          }),
-          { status: 200 },
-        ),
-      );
+    // First attempt 401s on connect; the second attempt (default resolve) wins.
+    h.connect.mockRejectedValueOnce(
+      new StreamableHTTPError(401, "unauthorized"),
+    );
+    h.callTool.mockResolvedValueOnce({
+      content: [{ type: "text", text: "retry ok" }],
+      structuredContent: { ok: true },
+    });
 
     // Re-seed the store after clear() so the second resolveAccessToken finds
     // a fresh entry without needing to launch an OAuth dance.
@@ -164,10 +179,9 @@ describe("makeProxyExecute", () => {
     expect(out.content[0]?.text).toBe("retry ok");
     expect(out.details).toEqual({ ok: true });
     expect(clearSpy).toHaveBeenCalledOnce();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-
-    const secondHeaders = fetchMock.mock.calls[1]![1].headers;
-    expect(secondHeaders.Authorization).toBe("Bearer at-after-clear");
+    expect(h.connect).toHaveBeenCalledTimes(2);
+    // The retry attempt carried the re-resolved token.
+    expect(h.authHeaders[1]).toBe("Bearer at-after-clear");
   });
 
   it("on persistent 401: throws DeckMCPError after a single retry", async () => {
@@ -182,9 +196,9 @@ describe("makeProxyExecute", () => {
         obtained_at: Math.floor(Date.now() / 1000),
       });
     });
-    fetchMock
-      .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }))
-      .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }));
+    h.connect
+      .mockRejectedValueOnce(new StreamableHTTPError(401, "unauthorized"))
+      .mockRejectedValueOnce(new StreamableHTTPError(401, "unauthorized"));
 
     const execute = makeProxyExecute("deck_list_presentations");
     const err = await execute(
@@ -193,23 +207,14 @@ describe("makeProxyExecute", () => {
       callContext(tokenStore),
     ).catch((e) => e);
     expect(err.code).toBe("http.401");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(h.connect).toHaveBeenCalledTimes(2);
   });
 
   it("propagates deck-formatted [code] errors without retrying", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: "1",
-          error: {
-            code: -32602,
-            message: "[validation.invalid_format] bad UUID",
-          },
-        }),
-        { status: 200 },
-      ),
-    );
+    h.callTool.mockResolvedValueOnce({
+      content: [{ type: "text", text: "[validation.invalid_format] bad UUID" }],
+      isError: true,
+    });
     const execute = makeProxyExecute("deck_get_presentation");
     const err = await execute(
       { presentation_id: "x" },
@@ -217,6 +222,7 @@ describe("makeProxyExecute", () => {
       callContext(freshTokenStore()),
     ).catch((e) => e);
     expect(err.code).toBe("validation.invalid_format");
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(h.callTool).toHaveBeenCalledOnce();
+    expect(h.connect).toHaveBeenCalledOnce();
   });
 });

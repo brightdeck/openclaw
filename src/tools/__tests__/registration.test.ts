@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PLUGIN_ID } from "../../config.js";
 import type { OAuthResult } from "../../lib/oauth.js";
@@ -8,6 +8,41 @@ import { exportPdfUrlToolDefinition } from "../export-pdf-url.js";
 import { exportPptxUrlToolDefinition } from "../export-pptx-url.js";
 import { listPresentationsToolDefinition } from "../list-presentations.js";
 import { revokePermissionToolDefinition } from "../revoke-permission.js";
+
+// Hoisted SDK handles — the per-call DeckClient now drives the MCP SDK
+// transport, not globalThis.fetch, so the proxy test mocks at the SDK level.
+const h = vi.hoisted(() => ({
+  connect: vi.fn(),
+  callTool: vi.fn(),
+  close: vi.fn(),
+  terminateSession: vi.fn(),
+  transport: { url: undefined as URL | undefined },
+}));
+
+vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
+  Client: vi.fn(() => ({
+    connect: h.connect,
+    callTool: h.callTool,
+    close: h.close,
+  })),
+}));
+
+vi.mock(
+  "@modelcontextprotocol/sdk/client/streamableHttp.js",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@modelcontextprotocol/sdk/client/streamableHttp.js")
+      >();
+    return {
+      ...actual,
+      StreamableHTTPClientTransport: vi.fn((url: URL) => {
+        h.transport.url = url;
+        return { terminateSession: h.terminateSession };
+      }),
+    };
+  },
+);
 
 interface ParamsShape {
   type: string;
@@ -91,45 +126,39 @@ describe("tool definition metadata", () => {
 });
 
 describe("tool execute (proxy) — happy path forwarded to /mcp", () => {
-  const realFetch = globalThis.fetch;
+  beforeEach(() => {
+    h.connect.mockReset().mockResolvedValue(undefined);
+    h.callTool.mockReset();
+    h.close.mockReset().mockResolvedValue(undefined);
+    h.terminateSession.mockReset().mockResolvedValue(undefined);
+    h.transport.url = undefined;
+  });
 
   it("forwards arguments through DeckClient", async () => {
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: "1",
-            result: {
-              content: [{ type: "text", text: "ok" }],
-              structuredContent: { items: [] },
-            },
-          }),
-          { status: 200 },
-        ),
+    h.callTool.mockResolvedValueOnce({
+      content: [{ type: "text", text: "ok" }],
+      structuredContent: { items: [] },
+    });
+
+    const def = listPresentationsToolDefinition;
+    if (!def.execute) throw new Error("expected execute on tool definition");
+
+    const api = createFakeApi();
+    const out = await def.execute(
+      { skip: 0, limit: 5 },
+      { apiBaseUrl: "https://api.brightdeck.ai" },
+      { api: api as never, toolCallId: "c" },
     );
-    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
-    try {
-      const def = listPresentationsToolDefinition;
-      if (!def.execute) throw new Error("expected execute on tool definition");
 
-      const api = createFakeApi();
-      const out = await def.execute(
-        { skip: 0, limit: 5 },
-        { apiBaseUrl: "https://api.brightdeck.ai" },
-        { api: api as never, toolCallId: "c" },
-      );
+    const result = out as { content: Array<{ text: string }> };
+    expect(result.content[0]?.text).toBe("ok");
 
-      const result = out as { content: Array<{ text: string }> };
-      expect(result.content[0]?.text).toBe("ok");
-
-      const [url, init] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.brightdeck.ai/mcp");
-      const body = JSON.parse((init as RequestInit).body as string);
-      expect(body.params.name).toBe("deck_list_presentations");
-      expect(body.params.arguments).toEqual({ skip: 0, limit: 5 });
-    } finally {
-      globalThis.fetch = realFetch;
-    }
+    // Canonical mounted path (trailing slash) and forwarded tool + args.
+    expect(h.transport.url?.toString()).toBe("https://api.brightdeck.ai/mcp/");
+    expect(h.callTool).toHaveBeenCalledWith(
+      { name: "deck_list_presentations", arguments: { skip: 0, limit: 5 } },
+      undefined,
+      expect.anything(),
+    );
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@brightdeck/openclaw-deck",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenClaw plugin for deck — manage presentations on api.brightdeck.ai",
   "type": "module",
   "main": "./dist/index.js",
@@ -39,7 +39,9 @@
     }
   },
   "dependencies": {
-    "typebox": "^1.1.38"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "typebox": "^1.1.38",
+    "zod": "^3.25.0"
   },
   "peerDependencies": {
     "openclaw": ">=2026.5.17"

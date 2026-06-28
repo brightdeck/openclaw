@@ -156,6 +156,9 @@ describe("startOAuth", () => {
 
     const cb = await fetch(`${redirectUri}?code=abc&state=${state}`);
     expect(cb.ok).toBe(true);
+    // Guards Symptom B: the loopback page must declare UTF-8 so the em-dash
+    // renders as "—" instead of mojibake "â€"".
+    expect(cb.headers.get("content-type")).toMatch(/charset=utf-8/i);
 
     const result = await flowPromise;
     expect(result.access_token).toBe("at-1");

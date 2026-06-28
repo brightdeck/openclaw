@@ -1,4 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+
+import { PLUGIN_VERSION } from "../config.js";
 
 export interface DeckClientOptions {
   baseUrl: string;
@@ -22,19 +29,36 @@ export class DeckMCPError extends Error {
   }
 }
 
-interface JsonRpcResponse {
-  result?: {
-    content?: unknown;
-    structuredContent?: unknown;
-  };
-  error?: {
-    code?: number;
-    message?: string;
-  };
-}
-
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/** Matches FastMCP's ``[code] message`` tool-error format anywhere in a string. */
+const CODE_MESSAGE_RE = /\[([^\]]+)\]\s+([\s\S]+)/;
+
+interface ToolResultContentItem {
+  type?: string;
+  text?: unknown;
+}
+
+interface CallToolResultLike {
+  content?: unknown;
+  structuredContent?: unknown;
+  isError?: boolean;
+}
+
+/**
+ * Thin wrapper over the official MCP SDK's Streamable-HTTP client.
+ *
+ * Each ``callTool`` opens a fresh ``Client`` + ``StreamableHTTPClientTransport``,
+ * which performs the MCP ``initialize`` → ``notifications/initialized`` handshake
+ * and captures the ``mcp-session-id`` that deck's stateful server requires before
+ * a ``tools/call``. The SDK also sends the dual ``Accept: application/json,
+ * text/event-stream`` header and transparently parses both JSON and SSE replies,
+ * which the previous hand-rolled JSON-only POST could not.
+ *
+ * deck keeps its own OAuth dance (``oauth.ts``); the SDK only carries the
+ * resulting bearer via ``requestInit.headers.Authorization`` (no ``authProvider``,
+ * so the SDK never runs an OAuth flow of its own).
+ */
 export class DeckClient {
   constructor(private readonly opts: DeckClientOptions) {}
 
@@ -42,87 +66,96 @@ export class DeckClient {
     name: string,
     args: Record<string, unknown>,
   ): Promise<DeckToolResult> {
-    const url = `${this.opts.baseUrl.replace(/\/+$/, "")}/mcp`;
-    const timeout = this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-    const timeoutController = new AbortController();
-    const timer = setTimeout(() => timeoutController.abort(), timeout);
+    // Trailing slash → hit the canonical mounted path directly, avoiding the
+    // bare-/mcp 307 that MCPPathNormalizationMiddleware rewrites server-side.
+    const url = new URL(`${this.opts.baseUrl.replace(/\/+$/, "")}/mcp/`);
+    const client = new Client({
+      name: "openclaw-deck",
+      version: PLUGIN_VERSION,
+    });
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: {
+        headers: { Authorization: `Bearer ${this.opts.accessToken}` },
+      },
+    });
 
     try {
-      const signal = mergeSignals([timeoutController.signal, this.opts.signal]);
-
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.opts.accessToken}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
+      // initialize + notifications/initialized + capture mcp-session-id.
+      await client.connect(transport, { signal: this.opts.signal });
+      const result = (await client.callTool(
+        { name, arguments: args },
+        undefined,
+        {
+          signal: this.opts.signal,
+          timeout: this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: randomUUID(),
-          method: "tools/call",
-          params: { name, arguments: args },
-        }),
-        signal,
-      });
+      )) as CallToolResultLike;
 
-      if (!res.ok) {
-        // Surface HTTP failures with status-encoded code so the tool helper
-        // can branch on 401 to clear stored tokens. Body text is intentionally
-        // dropped to avoid leaking refresh tokens from upstream error replies.
-        throw new DeckMCPError(
-          `http.${res.status}`,
-          `deck MCP returned ${res.status}`,
-        );
+      if (result.isError) {
+        // FastMCP tool errors come back as an isError result whose text is
+        // ``[code] message`` (MCP lowlevel server `_make_error_result`).
+        throw mapToolError(result);
       }
-      const body = (await res.json()) as JsonRpcResponse;
-
-      if (body.error) {
-        // FastMCP ``to_tool_error`` produces ``[code] message`` — preserve verbatim
-        // so the upstream code stays callable by tool-call clients.
-        const m = /^\[([^\]]+)\]\s+(.+)$/.exec(body.error.message ?? "");
-        throw new DeckMCPError(
-          m?.[1] ?? "unknown",
-          m?.[2] ?? (body.error.message ?? "deck MCP error"),
-        );
-      }
-      const result = body.result ?? {};
       return {
         content: (result.content as DeckToolResult["content"]) ?? [],
         structured_content: result.structuredContent,
       };
     } catch (err) {
-      if (
-        err instanceof Error &&
-        err.name === "AbortError" &&
-        timeoutController.signal.aborted
-      ) {
-        throw new DeckMCPError(
-          "http.timeout",
-          `deck MCP call timed out after ${timeout}ms`,
-        );
-      }
-      throw err;
+      throw toDeckError(err);
     } finally {
-      clearTimeout(timer);
+      // Best-effort teardown of the stateful session. A DELETE that lands on a
+      // worker without the session 404s; swallow it — the session expires
+      // server-side regardless (same behaviour as Claude.ai/ChatGPT).
+      await transport.terminateSession().catch(() => undefined);
+      await client.close().catch(() => undefined);
     }
   }
 }
 
-function mergeSignals(
-  signals: Array<AbortSignal | undefined>,
-): AbortSignal | undefined {
-  const real = signals.filter((s): s is AbortSignal => s !== undefined);
-  if (real.length === 0) return undefined;
-  if (real.length === 1) return real[0];
-  const controller = new AbortController();
-  for (const s of real) {
-    if (s.aborted) {
-      controller.abort();
-      break;
-    }
-    s.addEventListener("abort", () => controller.abort(), { once: true });
+/** Build a ``DeckMCPError`` from a FastMCP isError result's ``[code] message`` text. */
+function mapToolError(result: CallToolResultLike): DeckMCPError {
+  const text = extractText(result.content);
+  return parseDeckError(text, text || "deck MCP tool error");
+}
+
+/** Normalise any thrown error into a ``DeckMCPError`` (or pass through). */
+function toDeckError(err: unknown): Error {
+  if (err instanceof DeckMCPError) {
+    return err; // already mapped (the isError branch above)
   }
-  return controller.signal;
+  if (err instanceof StreamableHTTPError) {
+    // The HTTP status surfaces as ``.code``; mapping 401 → http.401 preserves
+    // tool-helper's clear-token + re-auth-once retry.
+    const code = err.code ?? "unknown";
+    return new DeckMCPError(`http.${code}`, `deck MCP returned ${code}`);
+  }
+  if (err instanceof McpError) {
+    if (err.code === ErrorCode.RequestTimeout) {
+      return new DeckMCPError("http.timeout", "deck MCP call timed out");
+    }
+    return parseDeckError(err.message, err.message);
+  }
+  if (err instanceof Error && err.name === "AbortError") {
+    return new DeckMCPError("http.timeout", "deck MCP call timed out");
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+function parseDeckError(text: string, fallbackMessage: string): DeckMCPError {
+  const m = CODE_MESSAGE_RE.exec(text);
+  return new DeckMCPError(
+    m?.[1] ?? "unknown",
+    m?.[2]?.trim() ?? fallbackMessage,
+  );
+}
+
+function extractText(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((item) => {
+      const it = item as ToolResultContentItem;
+      return typeof it?.text === "string" ? it.text : "";
+    })
+    .join("")
+    .trim();
 }

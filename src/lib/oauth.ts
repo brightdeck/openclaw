@@ -1,11 +1,11 @@
-import { createServer } from "node:http";
+import { createServer } from 'node:http';
 
-import { DECK_API_BASE_URL } from "../config.js";
-import { generatePkce, generateState } from "./pkce.js";
+import { DECK_API_BASE_URL } from '../config.js';
+import { generatePkce, generateState } from './pkce.js';
 
 /** CIMD doc URL — derived from apiBaseUrl so self-hosted decks work. */
 export function cimdUrlFor(apiBaseUrl: string): string {
-  return `${apiBaseUrl.replace(/\/+$/, "")}/mcp/.well-known/cimd/openclaw.json`;
+  return `${apiBaseUrl.replace(/\/+$/, '')}/mcp/.well-known/cimd/openclaw.json`;
 }
 
 export const CIMD_URL = cimdUrlFor(DECK_API_BASE_URL);
@@ -41,28 +41,28 @@ export async function startOAuth(opts: OAuthOptions): Promise<OAuthResult> {
     const redirectUri = `http://127.0.0.1:${port}/callback`;
     const cimdUrl = cimdUrlFor(opts.apiBaseUrl);
     const authorizeUrl = new URL(`${opts.apiBaseUrl}/oauth/authorize`);
-    authorizeUrl.searchParams.set("response_type", "code");
-    authorizeUrl.searchParams.set("client_id", cimdUrl);
-    authorizeUrl.searchParams.set("redirect_uri", redirectUri);
-    authorizeUrl.searchParams.set("code_challenge", pkce.challenge);
-    authorizeUrl.searchParams.set("code_challenge_method", pkce.method);
-    authorizeUrl.searchParams.set("state", state);
-    authorizeUrl.searchParams.set("resource", `${opts.apiBaseUrl}/mcp`);
-    authorizeUrl.searchParams.set("scope", opts.scopes.join(" "));
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('client_id', cimdUrl);
+    authorizeUrl.searchParams.set('redirect_uri', redirectUri);
+    authorizeUrl.searchParams.set('code_challenge', pkce.challenge);
+    authorizeUrl.searchParams.set('code_challenge_method', pkce.method);
+    authorizeUrl.searchParams.set('state', state);
+    authorizeUrl.searchParams.set('resource', `${opts.apiBaseUrl}/mcp`);
+    authorizeUrl.searchParams.set('scope', opts.scopes.join(' '));
 
     const urlStr = authorizeUrl.toString();
     opts.onAuthorizeUrl?.(urlStr);
 
     const { code, returnedState } = await codePromise;
     if (returnedState !== state) {
-      throw new Error("[auth.state_mismatch] OAuth state mismatch");
+      throw new Error('[auth.state_mismatch] OAuth state mismatch');
     }
 
     const tokenRes = await fetch(`${opts.apiBaseUrl}/oauth/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        grant_type: "authorization_code",
+        grant_type: 'authorization_code',
         code,
         redirect_uri: redirectUri,
         client_id: cimdUrl,
@@ -71,9 +71,7 @@ export async function startOAuth(opts: OAuthOptions): Promise<OAuthResult> {
       }),
     });
     if (!tokenRes.ok) {
-      throw new Error(
-        `[auth.token_exchange_failed] ${tokenRes.status}`,
-      );
+      throw new Error(`[auth.token_exchange_failed] ${tokenRes.status}`);
     }
     const body = (await tokenRes.json()) as OAuthTokenResponseBody;
     return { ...body, obtained_at: Math.floor(Date.now() / 1000) };
@@ -84,13 +82,13 @@ export async function startOAuth(opts: OAuthOptions): Promise<OAuthResult> {
 
 export async function refreshAccessToken(
   apiBaseUrl: string,
-  refreshToken: string,
+  refreshToken: string
 ): Promise<OAuthResult> {
   const res = await fetch(`${apiBaseUrl}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      grant_type: "refresh_token",
+      grant_type: 'refresh_token',
       refresh_token: refreshToken,
       client_id: cimdUrlFor(apiBaseUrl),
       resource: `${apiBaseUrl}/mcp`,
@@ -128,33 +126,34 @@ async function startCallbackServer(): Promise<CallbackServerHandle> {
       res.end();
       return;
     }
-    const u = new URL(req.url, "http://127.0.0.1");
-    if (u.pathname !== "/callback") {
+    const u = new URL(req.url, 'http://127.0.0.1');
+    if (u.pathname !== '/callback') {
       res.statusCode = 404;
       res.end();
       return;
     }
-    const code = u.searchParams.get("code");
-    const state = u.searchParams.get("state");
+    const code = u.searchParams.get('code');
+    const state = u.searchParams.get('state');
     if (!code || !state) {
       res.statusCode = 400;
-      res.end("Missing code or state.");
-      reject(new Error("[auth.bad_callback] missing code or state"));
+      res.end('Missing code or state.');
+      reject(new Error('[auth.bad_callback] missing code or state'));
       return;
     }
     res.statusCode = 200;
-    res.setHeader("Content-Type", "text/html");
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(
-      "<html><body><h2>deck connected — you can close this tab.</h2></body></html>",
+      '<!doctype html><html><head><meta charset="utf-8"></head>' +
+        '<body><h2>Successfully connected to Brightdeck. You can now close this tab.</h2></body></html>'
     );
     resolve({ code, returnedState: state });
   });
 
-  await new Promise<void>((res) => server.listen(0, "127.0.0.1", res));
+  await new Promise<void>((res) => server.listen(0, '127.0.0.1', res));
   const addr = server.address();
-  if (!addr || typeof addr === "string") {
+  if (!addr || typeof addr === 'string') {
     server.close();
-    throw new Error("[auth.server_setup_failed] could not bind loopback");
+    throw new Error('[auth.server_setup_failed] could not bind loopback');
   }
   return {
     port: addr.port,
@@ -164,4 +163,3 @@ async function startCallbackServer(): Promise<CallbackServerHandle> {
     },
   };
 }
-
