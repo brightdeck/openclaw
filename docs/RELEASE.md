@@ -173,11 +173,17 @@ On a clean machine or fresh container:
 ```bash
 openclaw plugins install clawhub:@brightdeck/openclaw-deck
 openclaw plugins enable openclaw-deck
-openclaw plugins inspect openclaw-deck --runtime --json
-openclaw call openclaw-deck/deck_list_presentations
+# Load-check: confirms the bundle loads and registers all 11 deck_* tools.
+openclaw plugins inspect openclaw-deck --runtime
+# Exercise a tool through an agent (there is no `openclaw call`; plugin tools
+# are agent tools, reachable only via the Gateway). Either run one embedded
+# agent turn:
+openclaw agent --local -m "list my deck presentations"
+# …or open an interactive UI and ask there:
+#   openclaw chat        # then: "list my deck presentations"
 ```
 
-The first call prints a sign-in URL to the gateway log inside the
+The first tool invocation prints a sign-in URL to the gateway log inside the
 `openclaw-deck: sign in to authorize` banner. Click it to complete the
 OAuth dance; subsequent calls within the access-token TTL skip it.
 (The plugin does not auto-open the browser — see README.md.)

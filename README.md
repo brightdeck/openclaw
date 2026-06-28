@@ -46,6 +46,22 @@ Headless environments (CI, server installs without an interactive browser
 on the same machine that can reach `127.0.0.1:NNNN`) are not supported in
 v0.1.0. The OAuth flow needs a browser that can hit the gateway's loopback.
 
+## Using the plugin
+
+deck tools are **agent tools** — you invoke them by asking a connected agent,
+not with a direct CLI command (there is no `openclaw call`). Once the plugin is
+enabled and the gateway is running, ask your agent in plain language:
+
+- In an interactive UI: run `openclaw chat`, then "list my deck presentations".
+- One embedded agent turn: `openclaw agent --local -m "create a deck about Q3 results"`.
+- From a connected channel (Slack, Discord, iMessage, …): message your agent normally.
+
+To confirm the plugin loaded and see the available tools (no agent needed):
+
+```bash
+openclaw plugins inspect openclaw-deck --runtime
+```
+
 ### Self-hosted deck (advanced)
 
 Override `apiBaseUrl` to point at your deck backend. The plugin reads
