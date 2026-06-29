@@ -1,8 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PLUGIN_ID } from "../../config.js";
 import type { OAuthResult } from "../../lib/oauth.js";
-import { createMemoryTokenStore } from "../../lib/token-store.js";
+import { createFileTokenStore } from "../../lib/token-store.js";
 import { createPresentationToolDefinition } from "../create-presentation.js";
 import { exportPdfUrlToolDefinition } from "../export-pdf-url.js";
 import { exportPptxUrlToolDefinition } from "../export-pptx-url.js";
@@ -58,36 +62,15 @@ const SEED_TOKEN: OAuthResult = {
 };
 
 /**
- * Build a fake api whose keyed-store delegates to ``createMemoryTokenStore``.
- * Mirrors what the runtime would expose to a tool's ``execute`` via
- * ``context.api``.
+ * Minimal fake ``context.api``. The proxy reads its token from the real
+ * file-backed store (seeded per-test under a temp OPENCLAW_STATE_DIR), so the
+ * api only needs the logger the store factory closes over.
  */
-function createFakeApi(seed: OAuthResult | null = SEED_TOKEN) {
-  const memStore = createMemoryTokenStore(seed);
-  const STORAGE_KEY = "oauth";
+function createFakeApi() {
   return {
     id: PLUGIN_ID,
     pluginConfig: { apiBaseUrl: "https://api.brightdeck.ai" },
-    runtime: {
-      state: {
-        openKeyedStore: vi.fn(() => ({
-          lookup: vi.fn(async (key: string) =>
-            key === STORAGE_KEY ? await memStore.load() : undefined,
-          ),
-          register: vi.fn(async (key: string, value: OAuthResult) => {
-            if (key === STORAGE_KEY) await memStore.save(value);
-          }),
-          registerIfAbsent: vi.fn(),
-          consume: vi.fn(),
-          delete: vi.fn(async (key: string) => {
-            if (key === STORAGE_KEY) await memStore.clear();
-            return true;
-          }),
-          entries: vi.fn(),
-          clear: vi.fn(),
-        })),
-      },
-    },
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     registerTool: vi.fn(),
   };
 }
@@ -126,12 +109,27 @@ describe("tool definition metadata", () => {
 });
 
 describe("tool execute (proxy) — happy path forwarded to /mcp", () => {
-  beforeEach(() => {
+  let tmp: string;
+  let savedStateDir: string | undefined;
+
+  beforeEach(async () => {
     h.connect.mockReset().mockResolvedValue(undefined);
     h.callTool.mockReset();
     h.close.mockReset().mockResolvedValue(undefined);
     h.terminateSession.mockReset().mockResolvedValue(undefined);
     h.transport.url = undefined;
+
+    // Seed a fresh token into the real file store the proxy will read back.
+    savedStateDir = process.env.OPENCLAW_STATE_DIR;
+    tmp = mkdtempSync(join(tmpdir(), "ocd-reg-"));
+    process.env.OPENCLAW_STATE_DIR = tmp;
+    await createFileTokenStore("https://api.brightdeck.ai").save(SEED_TOKEN);
+  });
+
+  afterEach(() => {
+    if (savedStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
+    else process.env.OPENCLAW_STATE_DIR = savedStateDir;
+    rmSync(tmp, { recursive: true, force: true });
   });
 
   it("forwards arguments through DeckClient", async () => {

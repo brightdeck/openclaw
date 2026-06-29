@@ -35,7 +35,16 @@ git checkout -b release/<X.Y.Z>
 
 ### 2. Bump version
 
-Edit `package.json` and bump per [SemVer](https://semver.org/):
+The version lives in **two** files that must stay in lockstep — bump
+**both** per [SemVer](https://semver.org/):
+
+- `package.json` (`version`).
+- `src/config.ts` (`PLUGIN_VERSION`) — the MCP client version sent in the
+  `initialize` handshake. `pnpm build` copies it into the generated
+  `openclaw.plugin.json`, so a drift here ships a manifest whose version
+  disagrees with the package.
+
+SemVer guidance:
 
 - **Patch** (`0.1.0 → 0.1.1`): bug fixes, no API surface changes.
 - **Minor** (`0.1.0 → 0.2.0`): new tools or new optional parameters.
@@ -168,13 +177,24 @@ Expected payload: `package/dist/`, `package/README.md`,
 
 ### 10. Verify install from clean state
 
-On a clean machine or fresh container:
+On a clean machine or fresh container, run the load-check for **every**
+release:
 
 ```bash
 openclaw plugins install clawhub:@brightdeck/openclaw-deck
 openclaw plugins enable openclaw-deck
 # Load-check: confirms the bundle loads and registers all 11 deck_* tools.
 openclaw plugins inspect openclaw-deck --runtime
+```
+
+#### Manual OAuth sign-in — major releases only
+
+For **major** releases — or any release that touches the OAuth/MCP path
+(`src/lib/oauth.ts`, `auth.ts`, `token-store.ts`, `tool-helper.ts`,
+`deck-client.ts`) — also exercise a tool end-to-end and complete the sign-in
+by hand:
+
+```bash
 # Exercise a tool through an agent (there is no `openclaw call`; plugin tools
 # are agent tools, reachable only via the Gateway). Either run one embedded
 # agent turn:
@@ -183,10 +203,27 @@ openclaw agent --local -m "list my deck presentations"
 #   openclaw chat        # then: "list my deck presentations"
 ```
 
-The first tool invocation prints a sign-in URL to the gateway log inside the
-`openclaw-deck: sign in to authorize` banner. Click it to complete the
-OAuth dance; subsequent calls within the access-token TTL skip it.
-(The plugin does not auto-open the browser — see README.md.)
+On the first tool invocation the plugin prints a flush-left sign-in URL to the
+gateway log inside the `openclaw-deck: sign in to authorize` banner and, on a
+local machine, auto-opens your browser to it (best-effort; suppressed over
+SSH-without-`DISPLAY`, in CI, or with `DECK_NO_BROWSER=1` — see README.md).
+Complete the OAuth dance once; the token persists to a `0600` file under the
+OpenClaw home, so subsequent calls (and later processes) skip it until refresh.
+
+For **minor / patch** releases this manual click is **not** required. The
+regression surface it used to cover is now gated automatically:
+
+- The hermetic end-to-end test (`src/__tests__/e2e/oauth-mcp-e2e.test.ts`, part
+  of normal `pnpm test` / CI) drives the real file-backed token store through a
+  real loopback dance and a real MCP `initialize → tools/call`, asserting the
+  token lands on disk at `0600`.
+- The anonymous contract smoke
+  (`pnpm test:smoke` via `.github/workflows/release-smoke.yml`) checks the live
+  backend's discovery documents, redirect-URI accept/reject, and the `/mcp`
+  401 challenge.
+
+Together they cover the loopback-dance + MCP-handshake + persistence regression
+surface without a human in the loop.
 
 ### 11. Announce
 

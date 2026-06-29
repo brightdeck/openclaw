@@ -31,7 +31,14 @@ export interface OAuthOptions {
   scopes: string[];
   /** Surfaced to the gateway log so the user can manually open the URL if needed. */
   onAuthorizeUrl?: (url: string) => void;
+  /** Aborts the wait for the loopback callback (e.g. the agent turn was cancelled). */
+  signal?: AbortSignal;
+  /** Bounds the wait for the loopback callback; defaults to 180s. */
+  signInTimeoutMs?: number;
 }
+
+/** Default ceiling on how long we wait for the human to finish the sign-in. */
+const DEFAULT_SIGNIN_TIMEOUT_MS = 180_000;
 
 export async function startOAuth(opts: OAuthOptions): Promise<OAuthResult> {
   const pkce = generatePkce();
@@ -53,7 +60,13 @@ export async function startOAuth(opts: OAuthOptions): Promise<OAuthResult> {
     const urlStr = authorizeUrl.toString();
     opts.onAuthorizeUrl?.(urlStr);
 
-    const { code, returnedState } = await codePromise;
+    // Wait for the loopback callback, but honour an abort signal and a timeout
+    // so a never-completed sign-in can't hang the tool call forever. Either
+    // rejection still runs the `finally close()` below, tearing the server down.
+    const { code, returnedState } = await waitForCallback(codePromise, {
+      signal: opts.signal,
+      timeoutMs: opts.signInTimeoutMs ?? DEFAULT_SIGNIN_TIMEOUT_MS,
+    });
     if (returnedState !== state) {
       throw new Error('[auth.state_mismatch] OAuth state mismatch');
     }
@@ -74,6 +87,7 @@ export async function startOAuth(opts: OAuthOptions): Promise<OAuthResult> {
       throw new Error(`[auth.token_exchange_failed] ${tokenRes.status}`);
     }
     const body = (await tokenRes.json()) as OAuthTokenResponseBody;
+    assertValidTokenBody(body);
     return { ...body, obtained_at: Math.floor(Date.now() / 1000) };
   } finally {
     close();
@@ -98,12 +112,81 @@ export async function refreshAccessToken(
     throw new Error(`[auth.refresh_failed] ${res.status}`);
   }
   const body = (await res.json()) as OAuthTokenResponseBody;
+  assertValidTokenBody(body);
   return { ...body, obtained_at: Math.floor(Date.now() / 1000) };
+}
+
+/**
+ * Guard against a 2xx token response whose body is missing the fields we depend
+ * on. Without this a malformed body yields a `Bearer undefined` header that the
+ * backend rejects with a 401 — an opaque auth loop instead of a clear error.
+ */
+function assertValidTokenBody(body: OAuthTokenResponseBody): void {
+  if (
+    typeof body?.access_token !== 'string' ||
+    body.access_token.length === 0 ||
+    typeof body?.refresh_token !== 'string' ||
+    body.refresh_token.length === 0 ||
+    typeof body?.expires_in !== 'number'
+  ) {
+    throw new Error(
+      '[auth.token_exchange_malformed] token response missing access_token/refresh_token/expires_in'
+    );
+  }
 }
 
 interface CallbackResult {
   code: string;
   returnedState: string;
+}
+
+interface WaitForCallbackOptions {
+  signal?: AbortSignal;
+  timeoutMs: number;
+}
+
+/**
+ * Race the loopback callback against (a) an abort signal and (b) a timeout. The
+ * listener and timer are always cleaned up in `finish()`, so nothing leaks once
+ * the promise settles, and the caller's `finally close()` tears down the server.
+ */
+function waitForCallback(
+  codePromise: Promise<CallbackResult>,
+  opts: WaitForCallbackOptions,
+): Promise<CallbackResult> {
+  const { signal, timeoutMs } = opts;
+  if (signal?.aborted) {
+    return Promise.reject(new Error('[auth.aborted] sign-in aborted'));
+  }
+  return new Promise<CallbackResult>((resolve, reject) => {
+    let settled = false;
+    const finish = (action: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      action();
+    };
+    const onAbort = (): void =>
+      finish(() => reject(new Error('[auth.aborted] sign-in aborted')));
+    const timer = setTimeout(
+      () =>
+        finish(() =>
+          reject(
+            new Error(
+              `[auth.timeout] sign-in not completed in ${Math.round(timeoutMs / 1000)}s`
+            )
+          )
+        ),
+      timeoutMs
+    );
+    timer.unref?.();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    codePromise.then(
+      (v) => finish(() => resolve(v)),
+      (e) => finish(() => reject(e instanceof Error ? e : new Error(String(e))))
+    );
+  });
 }
 
 interface CallbackServerHandle {

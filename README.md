@@ -17,34 +17,33 @@ openclaw plugins enable openclaw-deck
 
 ## First-run authentication
 
-The first time you invoke any tool, the plugin prints a sign-in URL like:
+The first time you invoke any tool, the plugin starts an OAuth 2.1 + PKCE
+sign-in. On a local machine it **opens your browser automatically** to the
+authorize URL, and it also prints the URL — flush-left on its own line, so it's
+easy to copy — in case the browser doesn't pop up:
 
 ```
-────────────────────────────────────────────────────────────────────────
 openclaw-deck: sign in to authorize this gateway.
-Open this URL in a browser, complete the deck sign-in, and the
-tool call will resume automatically once the loopback callback
-fires:
-
-  https://api.brightdeck.ai/oauth/authorize?...
-
-────────────────────────────────────────────────────────────────────────
+Opening your browser… if it doesn't open, visit this URL:
+https://api.brightdeck.ai/oauth/authorize?...
 ```
 
-Open that URL in any browser, sign in,
-and the plugin's loopback listener (`http://127.0.0.1:NNNN/callback`)
+Sign in, and the plugin's loopback listener (`http://127.0.0.1:NNNN/callback`)
 finishes the OAuth dance and stores a refresh token. Subsequent invocations
-auto-refresh — the prompt only appears on the first call per gateway and
-after a server-side revocation.
+auto-refresh — the prompt only appears on the first call per machine and after a
+server-side revocation.
 
-> The plugin does **not** auto-open the browser. OpenClaw's plugin sandbox
-> blocks `child_process` usage from third-party plugins, so you'll always
-> click the URL yourself. You can copy-paste it from the gateway log or
-> the channel where the tool is being called.
+The browser is **not** auto-opened over SSH-without-`DISPLAY`, in CI, or when you
+set `DECK_NO_BROWSER=1`; there the plugin just prints the copy-safe URL. If
+sign-in never completes (you close the tab, or the wait times out after a few
+minutes), the tool returns a short "sign-in did not complete" message instead of
+silently re-prompting — finish signing in and re-run the command.
 
-Headless environments (CI, server installs without an interactive browser
-on the same machine that can reach `127.0.0.1:NNNN`) are not supported in
-v0.1.0. The OAuth flow needs a browser that can hit the gateway's loopback.
+> **The loopback needs a browser on the gateway's own machine.** The callback
+> lands on `127.0.0.1:NNNN` on the host running the gateway, so the browser you
+> sign in with must be able to reach that host's loopback — the same machine, or
+> one you've port-forwarded to. A purely remote gateway with no local or
+> forwarded browser can't complete the loopback dance.
 
 ## Using the plugin
 
@@ -84,14 +83,24 @@ Override `apiBaseUrl` to point at your deck backend. The plugin reads
 
 - **401 Unauthorized**: refresh token expired or was revoked server-side. The
   plugin automatically re-runs the OAuth dance on the next tool call.
-- **Sign-in URL didn't appear**: the OAuth banner is printed via
-  `console.log` to wherever your gateway routes plugin stdout. Check the
-  gateway log; if nothing is there, re-run the tool and watch for the
+- **Sign-in URL didn't appear**: the sign-in block is emitted through the
+  plugin's structured logger to wherever your gateway routes plugin logs. Check
+  the gateway log; if nothing is there, re-run the tool and watch for the
   `openclaw-deck: sign in to authorize` block.
+- **Browser didn't open**: expected over SSH-without-`DISPLAY`, in CI, or with
+  `DECK_NO_BROWSER=1` — open the printed URL yourself. Otherwise confirm a
+  default browser is set and the gateway host has a desktop session.
 - **Loopback callback never fires**: the URL on the sign-in page must
   redirect to `http://127.0.0.1:NNNN/callback` — confirm the gateway is
   on the same machine (or port-forwarded) as the browser you're using.
-- **Reset stored tokens**: `openclaw plugins data clear openclaw-deck`.
+- **Reset stored tokens**: delete the token file; the next tool call re-runs the
+  OAuth dance. (`openclaw plugins data clear` does **not** reach it — the plugin
+  owns the file directly.)
+
+  ```bash
+  rm "$HOME/.openclaw/plugin-state/openclaw-deck/oauth.json"
+  ```
+
 - **Custom backend**: set `apiBaseUrl` to your deck URL.
 
 ## License

@@ -20,15 +20,24 @@ This plugin obtains OAuth 2.1 access tokens and refresh tokens from
 `api.brightdeck.ai` (or a user-configured base URL) via PKCE through a loopback
 callback. Tokens are:
 
-- Stored at rest via OpenClaw's `provider-auth-runtime` (encrypted by the
-  gateway's keystore).
+- Stored as a **plaintext JSON file** with `0600` permissions (owner
+  read/write only) under your OpenClaw home, at
+  `<openclaw-home>/.openclaw/plugin-state/openclaw-deck/oauth.json` (or under
+  `$OPENCLAW_STATE_DIR` if you set that override). This is the same posture as
+  the `gh` and `aws` CLIs — and as OpenClaw's own plugin-state store — store
+  credentials: plaintext on disk, protected by filesystem permissions rather
+  than an at-rest cipher. The blob is scoped to the `apiBaseUrl` it was minted
+  for, so it is never replayed against a different backend.
 - Never logged. Network errors include status codes, not response bodies.
 - Sent only to the configured `apiBaseUrl` (no cross-domain redirect followed).
 
-To revoke stored tokens locally:
+To revoke stored tokens locally, delete the token file (the next tool call will
+re-run the OAuth dance):
 
 ```bash
-openclaw plugins data clear openclaw-deck
+rm "$HOME/.openclaw/plugin-state/openclaw-deck/oauth.json"
 ```
 
-The next tool call will re-run the OAuth dance.
+> Note: `openclaw plugins data clear openclaw-deck` does **not** remove these
+> tokens — the plugin owns this file directly rather than using the gateway's
+> keyed store.

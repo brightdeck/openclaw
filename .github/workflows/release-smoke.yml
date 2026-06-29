@@ -1,0 +1,35 @@
+# Anonymous contract smoke against a live deck backend (staging). Gates the
+# loopback-OAuth + MCP-handshake + discovery regression surface for minor/patch
+# releases so the manual OAuth click in docs/RELEASE.md drops to major releases.
+#
+# The staging URL and the (currently absent) live refresh token are injected via
+# repo secrets — this file is mirrored to the public repo + audited, so it must
+# carry no host or credential literals.
+name: Release smoke
+
+on:
+  push:
+    tags: ["v*"]
+  schedule:
+    - cron: "0 13 * * 1" # weekly, Mondays 13:00 UTC
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test:smoke
+        env:
+          DECK_SMOKE_BASE_URL: ${{ secrets.DECK_SMOKE_BASE_URL }}
+          # Absent in CI -> the token-gated live MCP step skips (refresh tokens
+          # rotate, so a static secret is single-use; see the smoke test caveat).
+          DECK_TEST_REFRESH_TOKEN: ${{ secrets.DECK_TEST_REFRESH_TOKEN }}

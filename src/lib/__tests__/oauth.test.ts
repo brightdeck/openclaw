@@ -12,6 +12,23 @@ import {
 // test can simulate the browser hitting our callback server.
 const realFetch = globalThis.fetch;
 
+/**
+ * Poll a loopback callback URL until it refuses connections, proving the OAuth
+ * server was torn down (no orphaned listener). Retries briefly because
+ * ``server.close()`` is async.
+ */
+async function expectPortClosed(redirectUri: string): Promise<void> {
+  for (let i = 0; i < 30; i++) {
+    try {
+      await fetch(redirectUri);
+    } catch {
+      return; // connection refused → server closed
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`loopback ${redirectUri} still accepting connections`);
+}
+
 function installFetchMock(
   remoteMock: ReturnType<typeof vi.fn>,
 ): () => void {
@@ -188,5 +205,44 @@ describe("startOAuth", () => {
     const redirectUri = params.get("redirect_uri")!;
     await fetch(`${redirectUri}?code=abc&state=not-the-right-state`);
     await expect(flowPromise).rejects.toThrow(/\[auth\.state_mismatch\]/);
+  });
+
+  it("aborts the wait when the signal fires and tears down the loopback", async () => {
+    const ac = new AbortController();
+    let capturedUrl = "";
+    const flowPromise = startOAuth({
+      apiBaseUrl: "https://api.brightdeck.ai",
+      scopes: ["presentation:read"],
+      signal: ac.signal,
+      signInTimeoutMs: 60_000,
+      onAuthorizeUrl: (u) => {
+        capturedUrl = u;
+      },
+    });
+    flowPromise.catch(() => undefined);
+
+    await new Promise((r) => setTimeout(r, 25));
+    const redirectUri = new URL(capturedUrl).searchParams.get("redirect_uri")!;
+    ac.abort();
+    await expect(flowPromise).rejects.toThrow(/\[auth\.aborted\]/);
+    await expectPortClosed(redirectUri);
+  });
+
+  it("times out the wait when the callback never fires and tears down the loopback", async () => {
+    let capturedUrl = "";
+    const flowPromise = startOAuth({
+      apiBaseUrl: "https://api.brightdeck.ai",
+      scopes: ["presentation:read"],
+      signInTimeoutMs: 40,
+      onAuthorizeUrl: (u) => {
+        capturedUrl = u;
+      },
+    });
+    flowPromise.catch(() => undefined);
+
+    await new Promise((r) => setTimeout(r, 25));
+    const redirectUri = new URL(capturedUrl).searchParams.get("redirect_uri")!;
+    await expect(flowPromise).rejects.toThrow(/\[auth\.timeout\]/);
+    await expectPortClosed(redirectUri);
   });
 });

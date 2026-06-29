@@ -1,6 +1,6 @@
 {
   "name": "@brightdeck/openclaw-deck",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "OpenClaw plugin for deck — manage presentations on api.brightdeck.ai",
   "type": "module",
   "main": "./dist/index.js",
@@ -19,6 +19,7 @@
     "lint": "eslint src",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:smoke": "vitest run --config vitest.smoke.config.ts",
     "clean": "rm -rf dist openclaw.plugin.json",
     "audit-public": "node scripts/audit-public.mjs"
   },
