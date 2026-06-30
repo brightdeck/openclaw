@@ -52,6 +52,8 @@ describe("oauth + mcp end-to-end (real file store, real MCP server)", () => {
     const flow = resolveAccessToken({
       apiBaseUrl: backend.apiBaseUrl,
       tokenStore,
+      // Force the blocking path so the real loopback dance drives to completion.
+      openBrowser: async () => true,
       log: (_level, msg) => {
         const m = /(https?:\/\/\S+)/.exec(msg);
         if (m && !authorizeUrl) authorizeUrl = m[1]!;
@@ -67,7 +69,9 @@ describe("oauth + mcp end-to-end (real file store, real MCP server)", () => {
     expect(location).toBeTruthy();
     await fetch(location!);
 
-    const accessToken = await flow;
+    const res = await flow;
+    expect(res.kind).toBe("token");
+    const accessToken = res.kind === "token" ? res.accessToken : "";
     expect(accessToken).toBe(backend.accessToken);
 
     // The token landed on disk: v:1, scoped to this backend, 0600.

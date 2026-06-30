@@ -38,10 +38,14 @@ git checkout -b release/<X.Y.Z>
 The version lives in **two** files that must stay in lockstep — bump
 **both** per [SemVer](https://semver.org/):
 
-- `package.json` (`version`).
+- `package.json` (`version`) — **the source of truth for the published
+  manifest.** `openclaw plugins build` copies this field verbatim into the
+  generated `openclaw.plugin.json` `version`, so the manifest tracks
+  `package.json` automatically **as long as you rebuild** (§4/§5) before
+  publishing.
 - `src/config.ts` (`PLUGIN_VERSION`) — the MCP client version sent in the
-  `initialize` handshake. `pnpm build` copies it into the generated
-  `openclaw.plugin.json`, so a drift here ships a manifest whose version
+  `initialize` handshake. The build does **not** read this; it's a separate
+  hand-maintained constant, so bump it in lockstep or the handshake version
   disagrees with the package.
 
 SemVer guidance:
@@ -72,10 +76,18 @@ pnpm install --frozen-lockfile
 pnpm run audit-public
 pnpm lint
 pnpm build
+pnpm run check-version
 pnpm test
 ```
 
-All five steps must pass before continuing.
+All six steps must pass before continuing. `pnpm run check-version`
+(`scripts/check-version-sync.mjs`) fails unless `package.json`, `src/config.ts`
+`PLUGIN_VERSION`, the version baked into the freshly built `dist/index.js`, and
+the generated `openclaw.plugin.json` all match — it is the guard against
+publishing a **stale bundle** under a new version number (the 0.3.0 failure
+mode). Because ClawHub's publish (§8) runs no npm lifecycle scripts, this manual
+run before §8 is the only thing that catches a stale `dist/` for the ClawHub
+artifact.
 
 > **Invariant — no runtime dependencies.** `pnpm build` **bundles** all third-party
 > libraries (`@modelcontextprotocol/sdk`, `typebox`, `zod`, …) into a single
@@ -94,11 +106,23 @@ All five steps must pass before continuing.
 ```bash
 openclaw plugins build --entry ./dist/index.js
 openclaw plugins validate --entry ./dist/index.js
+clawhub package validate .
 ```
 
-This catches manifest ↔ runtime parity issues (missing tool
-registrations, config-schema drift, peer-dep version mismatches) that
-the unit tests don't.
+`openclaw plugins validate` catches manifest ↔ runtime parity issues
+(missing tool registrations, config-schema drift, peer-dep version
+mismatches) that the unit tests don't. `clawhub package validate .` runs
+the ClawHub Plugin Inspector locally and must report `Warnings: 0` — it is
+what flags `package-manifest-version-drift` when `package.json` and the
+generated `openclaw.plugin.json` disagree.
+
+> **Guard.** `package.json` defines a `prepublishOnly` script
+> (`pnpm run build && pnpm run validate`), so **`pnpm publish` (§9)
+> auto-regenerates and revalidates the manifest** — npm can no longer ship
+> a stale one. ClawHub's `clawhub package publish` (§8) packs the working
+> tree directly and does **not** run npm lifecycle scripts, so you must
+> still run §4/§5 by hand before §8. (This guard exists because 0.3.0
+> shipped a stale `0.2.1` manifest — see the CHANGELOG `[0.3.1]` entry.)
 
 ### 6. Dry-run publish
 
@@ -203,12 +227,13 @@ openclaw agent --local -m "list my deck presentations"
 #   openclaw chat        # then: "list my deck presentations"
 ```
 
-On the first tool invocation the plugin prints a flush-left sign-in URL to the
-gateway log inside the `openclaw-deck: sign in to authorize` banner and, on a
-local machine, auto-opens your browser to it (best-effort; suppressed over
-SSH-without-`DISPLAY`, in CI, or with `DECK_NO_BROWSER=1` — see README.md).
-Complete the OAuth dance once; the token persists to a `0600` file under the
-OpenClaw home, so subsequent calls (and later processes) skip it until refresh.
+On the first tool invocation, on a machine with a desktop browser the plugin
+auto-opens your browser to the authorize URL and blocks until you finish; when a
+browser can't be opened (SSH-without-`DISPLAY`, in CI, or with `DECK_NO_BROWSER=1`)
+the tool returns the URL in its result for the agent to relay, and you sign in
+then re-run (see README.md). Complete the OAuth dance once; the token persists to
+a `0600` file under the OpenClaw home, so subsequent calls (and later processes)
+skip it until refresh.
 
 For **minor / patch** releases this manual click is **not** required. The
 regression surface it used to cover is now gated automatically:
@@ -252,23 +277,27 @@ For a critical fix that can't wait for the normal cadence:
 ## Rollback
 
 ClawHub publishes are immutable per version. To "roll back" a bad
-release, publish a corrected `<X.Y.Z+1>` rather than unpublishing.
+release, publish a corrected `<X.Y.Z+1>` **with the `latest` tag** rather
+than unpublishing — new installs resolve `latest` to the fix, leaving the
+bad version installable-but-un-preferred. This is the preferred path; it
+needs no destructive action.
 
-To deprecate a known-bad version so installers see a warning:
+ClawHub CLI **v0.23.0 has no `deprecate` command** (earlier docs
+referenced one — it no longer exists). The only version-level moderation
+is a **permanent, irreversible** delete; reach for it only when a version
+must be removed entirely:
 
 ```bash
-clawhub package deprecate brightdeck/openclaw-deck \
-  --version <X.Y.Z> \
-  --reason "Use <X.Y.Z+1> — see CHANGELOG.md"
+# IRREVERSIBLE — the version "cannot be restored or republished".
+# Publish the replacement FIRST if you are deleting the current latest.
+clawhub package delete brightdeck/openclaw-deck --version <X.Y.Z> --yes
 ```
 
-For npm:
+npm still supports a reversible deprecation warning:
 
 ```bash
 npm deprecate @brightdeck/openclaw-deck@<X.Y.Z> "Use <X.Y.Z+1>"
 ```
-
-Both are reversible.
 
 ## Troubleshooting
 

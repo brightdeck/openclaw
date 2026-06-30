@@ -18,26 +18,31 @@ openclaw plugins enable openclaw-deck
 ## First-run authentication
 
 The first time you invoke any tool, the plugin starts an OAuth 2.1 + PKCE
-sign-in. On a local machine it **opens your browser automatically** to the
-authorize URL, and it also prints the URL — flush-left on its own line, so it's
-easy to copy — in case the browser doesn't pop up:
+sign-in.
 
-```
-openclaw-deck: sign in to authorize this gateway.
-Opening your browser… if it doesn't open, visit this URL:
-https://api.brightdeck.ai/oauth/authorize?...
-```
+- **On a machine with a desktop browser**, the plugin **opens your browser
+  automatically** to the authorize URL and waits for you to finish — you don't
+  copy anything; just complete the sign-in.
+- **When a browser can't be opened** (SSH-without-`DISPLAY`, CI, no default
+  browser, or `DECK_NO_BROWSER=1`), the tool returns right away and the **agent
+  relays the sign-in URL in its reply** (soft-wrapped and clickable). Open it,
+  finish signing in, then **re-run the command** — the loopback listener keeps
+  running in the background to capture the sign-in, and the stored token is
+  reused automatically.
 
-Sign in, and the plugin's loopback listener (`http://127.0.0.1:NNNN/callback`)
+Either way, the plugin's loopback listener (`http://127.0.0.1:NNNN/callback`)
 finishes the OAuth dance and stores a refresh token. Subsequent invocations
 auto-refresh — the prompt only appears on the first call per machine and after a
-server-side revocation.
+server-side revocation. If sign-in never completes (you close the tab, or the
+wait times out after a few minutes), the tool returns a short "sign-in did not
+complete" message — including the URL to retry — instead of silently
+re-prompting.
 
-The browser is **not** auto-opened over SSH-without-`DISPLAY`, in CI, or when you
-set `DECK_NO_BROWSER=1`; there the plugin just prints the copy-safe URL. If
-sign-in never completes (you close the tab, or the wait times out after a few
-minutes), the tool returns a short "sign-in did not complete" message instead of
-silently re-prompting — finish signing in and re-run the command.
+> **Headless one-shot caveat.** On a headless host invoked as a one-shot
+> (`openclaw agent --local`), first-run sign-in can't complete: the process exits
+> before the background listener captures the callback. Do the first sign-in from
+> `openclaw chat` or a connected gateway (a long-lived process); afterwards
+> one-shot calls reuse the stored token.
 
 > **The loopback needs a browser on the gateway's own machine.** The callback
 > lands on `127.0.0.1:NNNN` on the host running the gateway, so the browser you
@@ -83,13 +88,13 @@ Override `apiBaseUrl` to point at your deck backend. The plugin reads
 
 - **401 Unauthorized**: refresh token expired or was revoked server-side. The
   plugin automatically re-runs the OAuth dance on the next tool call.
-- **Sign-in URL didn't appear**: the sign-in block is emitted through the
-  plugin's structured logger to wherever your gateway routes plugin logs. Check
-  the gateway log; if nothing is there, re-run the tool and watch for the
-  `openclaw-deck: sign in to authorize` block.
+- **Sign-in URL didn't appear**: when the browser can't be opened, the URL is
+  returned in the tool result for the agent to relay — if you don't see it, the
+  agent may have summarized it away; re-run and ask it to "show the full sign-in
+  URL". (The structured-logger copy is suppressed inside the `openclaw chat` TUI.)
 - **Browser didn't open**: expected over SSH-without-`DISPLAY`, in CI, or with
-  `DECK_NO_BROWSER=1` — open the printed URL yourself. Otherwise confirm a
-  default browser is set and the gateway host has a desktop session.
+  `DECK_NO_BROWSER=1` — use the URL the agent relays. Otherwise confirm a default
+  browser is set and the gateway host has a desktop session.
 - **Loopback callback never fires**: the URL on the sign-in page must
   redirect to `http://127.0.0.1:NNNN/callback` — confirm the gateway is
   on the same machine (or port-forwarded) as the browser you're using.

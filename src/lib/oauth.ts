@@ -40,58 +40,107 @@ export interface OAuthOptions {
 /** Default ceiling on how long we wait for the human to finish the sign-in. */
 const DEFAULT_SIGNIN_TIMEOUT_MS = 180_000;
 
-export async function startOAuth(opts: OAuthOptions): Promise<OAuthResult> {
+export interface OAuthDanceHandle {
+  /** The authorize URL the user must visit to sign in. */
+  authorizeUrl: string;
+  /**
+   * Wait for the loopback callback, validate state, and exchange the code for
+   * tokens. Honours an abort signal and a timeout; always tears the loopback
+   * server down when it settles. Call at most once.
+   */
+  awaitResult(opts?: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }): Promise<OAuthResult>;
+  /** Tear down the loopback server without awaiting (abandon path). */
+  close(): void;
+}
+
+/**
+ * Start the loopback server, build the authorize URL, and emit it — the cheap
+ * part of the dance. The caller then decides whether to `awaitResult` (block on
+ * the human) or hand the handle to a background task. Splitting begin/await lets
+ * the caller pick the abort signal AFTER it knows whether the browser actually
+ * opened (a backgrounded dance must outlive the turn that started it).
+ */
+export async function beginOAuth(opts: {
+  apiBaseUrl: string;
+  scopes: string[];
+  onAuthorizeUrl?: (url: string) => void;
+}): Promise<OAuthDanceHandle> {
   const pkce = generatePkce();
   const state = generateState();
   const { port, codePromise, close } = await startCallbackServer();
-  try {
-    const redirectUri = `http://127.0.0.1:${port}/callback`;
-    const cimdUrl = cimdUrlFor(opts.apiBaseUrl);
-    const authorizeUrl = new URL(`${opts.apiBaseUrl}/oauth/authorize`);
-    authorizeUrl.searchParams.set('response_type', 'code');
-    authorizeUrl.searchParams.set('client_id', cimdUrl);
-    authorizeUrl.searchParams.set('redirect_uri', redirectUri);
-    authorizeUrl.searchParams.set('code_challenge', pkce.challenge);
-    authorizeUrl.searchParams.set('code_challenge_method', pkce.method);
-    authorizeUrl.searchParams.set('state', state);
-    authorizeUrl.searchParams.set('resource', `${opts.apiBaseUrl}/mcp`);
-    authorizeUrl.searchParams.set('scope', opts.scopes.join(' '));
+  const redirectUri = `http://127.0.0.1:${port}/callback`;
+  const cimdUrl = cimdUrlFor(opts.apiBaseUrl);
+  const authorizeUrl = new URL(`${opts.apiBaseUrl}/oauth/authorize`);
+  authorizeUrl.searchParams.set('response_type', 'code');
+  authorizeUrl.searchParams.set('client_id', cimdUrl);
+  authorizeUrl.searchParams.set('redirect_uri', redirectUri);
+  authorizeUrl.searchParams.set('code_challenge', pkce.challenge);
+  authorizeUrl.searchParams.set('code_challenge_method', pkce.method);
+  authorizeUrl.searchParams.set('state', state);
+  authorizeUrl.searchParams.set('resource', `${opts.apiBaseUrl}/mcp`);
+  authorizeUrl.searchParams.set('scope', opts.scopes.join(' '));
 
-    const urlStr = authorizeUrl.toString();
-    opts.onAuthorizeUrl?.(urlStr);
+  const urlStr = authorizeUrl.toString();
+  opts.onAuthorizeUrl?.(urlStr);
 
-    // Wait for the loopback callback, but honour an abort signal and a timeout
-    // so a never-completed sign-in can't hang the tool call forever. Either
-    // rejection still runs the `finally close()` below, tearing the server down.
-    const { code, returnedState } = await waitForCallback(codePromise, {
-      signal: opts.signal,
-      timeoutMs: opts.signInTimeoutMs ?? DEFAULT_SIGNIN_TIMEOUT_MS,
-    });
-    if (returnedState !== state) {
-      throw new Error('[auth.state_mismatch] OAuth state mismatch');
-    }
+  return {
+    authorizeUrl: urlStr,
+    close,
+    async awaitResult(awaitOpts) {
+      try {
+        // Wait for the loopback callback, but honour an abort signal and a
+        // timeout so a never-completed sign-in can't hang forever. Either
+        // rejection still runs the `finally close()`, tearing the server down.
+        const { code, returnedState } = await waitForCallback(codePromise, {
+          signal: awaitOpts?.signal,
+          timeoutMs: awaitOpts?.timeoutMs ?? DEFAULT_SIGNIN_TIMEOUT_MS,
+        });
+        if (returnedState !== state) {
+          throw new Error('[auth.state_mismatch] OAuth state mismatch');
+        }
 
-    const tokenRes = await fetch(`${opts.apiBaseUrl}/oauth/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: redirectUri,
-        client_id: cimdUrl,
-        code_verifier: pkce.verifier,
-        resource: `${opts.apiBaseUrl}/mcp`,
-      }),
-    });
-    if (!tokenRes.ok) {
-      throw new Error(`[auth.token_exchange_failed] ${tokenRes.status}`);
-    }
-    const body = (await tokenRes.json()) as OAuthTokenResponseBody;
-    assertValidTokenBody(body);
-    return { ...body, obtained_at: Math.floor(Date.now() / 1000) };
-  } finally {
-    close();
-  }
+        const tokenRes = await fetch(`${opts.apiBaseUrl}/oauth/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: redirectUri,
+            client_id: cimdUrl,
+            code_verifier: pkce.verifier,
+            resource: `${opts.apiBaseUrl}/mcp`,
+          }),
+        });
+        if (!tokenRes.ok) {
+          throw new Error(`[auth.token_exchange_failed] ${tokenRes.status}`);
+        }
+        const body = (await tokenRes.json()) as OAuthTokenResponseBody;
+        assertValidTokenBody(body);
+        return { ...body, obtained_at: Math.floor(Date.now() / 1000) };
+      } finally {
+        close();
+      }
+    },
+  };
+}
+
+/**
+ * Blocking convenience wrapper: begin the dance and await the result in one
+ * call. Preserves the original `startOAuth` contract.
+ */
+export async function startOAuth(opts: OAuthOptions): Promise<OAuthResult> {
+  const handle = await beginOAuth({
+    apiBaseUrl: opts.apiBaseUrl,
+    scopes: opts.scopes,
+    onAuthorizeUrl: opts.onAuthorizeUrl,
+  });
+  return handle.awaitResult({
+    signal: opts.signal,
+    timeoutMs: opts.signInTimeoutMs,
+  });
 }
 
 export async function refreshAccessToken(

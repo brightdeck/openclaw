@@ -176,20 +176,49 @@ describe("makeProxyExecute", () => {
     expect(h.connect).toHaveBeenCalledTimes(2);
   });
 
-  it("surfaces a friendly result (not a throw) when the sign-in dance fails", async () => {
-    // Empty store forces the dance; a tiny sign-in timeout makes it fail fast
-    // instead of waiting for a callback that never comes.
+  it("browser refused: returns a pending-signin result carrying the URL", async () => {
+    // Empty store forces the dance; the browser can't open, so the proxy returns
+    // immediately with the URL for the model to relay (background dance persists).
     const tokenStore = createMemoryTokenStore();
     const execute = makeProxyExecute("deck_list_presentations", {
       createTokenStore: () => tokenStore,
+      openBrowser: async () => false,
+      signInTimeoutMs: 100,
+    });
+    const out = await execute(
+      { skip: 0, limit: 10 },
+      { apiBaseUrl: "https://pen.brightdeck.ai" },
+      callContext(),
+    );
+
+    expect(out.details).toMatchObject({ auth_pending: true });
+    expect(out.content[0]?.text).toMatch(/oauth\/authorize/);
+    // The MCP call must never have been attempted on a pending sign-in.
+    expect(h.connect).not.toHaveBeenCalled();
+    // Let the background dance time out and free its loopback before the next test.
+    await new Promise((r) => setTimeout(r, 120));
+  });
+
+  it("browser opened but sign-in times out: surfaces the URL to retry", async () => {
+    // Empty store + a tiny timeout: the browser opened, so it blocks, then times
+    // out — the failure result embeds the captured URL so the user can retry.
+    const tokenStore = createMemoryTokenStore();
+    const execute = makeProxyExecute("deck_list_presentations", {
+      createTokenStore: () => tokenStore,
+      openBrowser: async () => true,
       signInTimeoutMs: 20,
     });
-    const out = await execute({ skip: 0, limit: 10 }, CONFIG, callContext());
+    const out = await execute(
+      { skip: 0, limit: 10 },
+      { apiBaseUrl: "https://blk.brightdeck.ai" },
+      callContext(),
+    );
 
     expect(out.details).toMatchObject({
       auth_error: expect.stringMatching(/timeout/),
     });
     expect(out.content[0]?.text).toMatch(/sign-in did not complete/i);
+    expect(out.content[0]?.text).toMatch(/oauth\/authorize/);
     // The MCP call must never have been attempted on an auth failure.
     expect(h.connect).not.toHaveBeenCalled();
   });

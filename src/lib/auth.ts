@@ -1,6 +1,6 @@
 import { DEFAULT_OAUTH_SCOPES } from "../config.js";
 import { openBrowser } from "./browser-open.js";
-import { refreshAccessToken, startOAuth, type OAuthResult } from "./oauth.js";
+import { beginOAuth, refreshAccessToken, type OAuthResult } from "./oauth.js";
 import type { TokenStore } from "./token-store.js";
 
 const REFRESH_LEAD_SECONDS = 60;
@@ -18,7 +18,19 @@ export interface ResolveAccessTokenDeps {
   signInTimeoutMs?: number;
   /** Notified with the authorize URL so the caller can surface it on failure. */
   onAuthorizeUrl?: (url: string) => void;
+  /** Override for tests; defaults to the real browser opener. */
+  openBrowser?: (url: string) => Promise<boolean>;
 }
+
+/**
+ * Discriminated result of resolving an access token. `pending-signin` means a
+ * first-run dance is required but the browser could NOT be opened on the gateway
+ * host — the caller must surface `url` to the user (the model relays it), and
+ * the background dance keeps listening to persist the token for the re-run.
+ */
+export type TokenResolution =
+  | { kind: "token"; accessToken: string }
+  | { kind: "pending-signin"; url: string };
 
 /**
  * In-flight dance/refresh promises keyed by `apiBaseUrl`, so concurrent cold
@@ -49,28 +61,110 @@ function singleFlight(
 }
 
 /**
+ * A first-run OAuth dance shared across concurrent cold callers in one process.
+ * `result` resolves with the minted tokens (and persists them) when the loopback
+ * callback fires, or rejects on abort/timeout/exchange failure.
+ */
+interface SharedDance {
+  authorizeUrl: string;
+  browserOpened: boolean;
+  result: Promise<OAuthResult>;
+}
+
+/** In-flight dances keyed by `apiBaseUrl` (separate from the refresh guard). */
+const danceInFlight = new Map<string, Promise<SharedDance>>();
+
+function sharedDance(
+  key: string,
+  factory: () => Promise<SharedDance>,
+): Promise<SharedDance> {
+  const existing = danceInFlight.get(key);
+  if (existing) return existing;
+  const p = factory();
+  danceInFlight.set(key, p);
+  const clear = (): void => {
+    if (danceInFlight.get(key) === p) danceInFlight.delete(key);
+  };
+  // Keep the entry alive until the dance FULLY settles (the loopback callback
+  // fires, or it times out), so a quick re-run JOINS this dance instead of
+  // spawning a second loopback server + second URL. Clear immediately if the
+  // begin phase itself fails.
+  p.then((sd) => {
+    sd.result.then(clear, clear);
+  }, clear);
+  return p;
+}
+
+async function startDance(deps: ResolveAccessTokenDeps): Promise<SharedDance> {
+  const log = deps.log ?? defaultLog;
+  const open = deps.openBrowser ?? openBrowser;
+  const handle = await beginOAuth({
+    apiBaseUrl: deps.apiBaseUrl,
+    scopes: DEFAULT_OAUTH_SCOPES,
+    onAuthorizeUrl: (url) => {
+      // Logged for the file log; in `openclaw chat` this subsystem is suppressed
+      // from the terminal, which is why the URL is also surfaced via the tool
+      // result (see tool-helper) on the browser-refused path.
+      log(
+        "info",
+        [
+          "openclaw-deck: sign in to authorize this gateway.",
+          "Opening your browser… if it doesn't open, visit this URL:",
+          url,
+        ].join("\n"),
+      );
+      deps.onAuthorizeUrl?.(url);
+    },
+  });
+
+  const browserOpened = await open(handle.authorizeUrl);
+  // A backgrounded dance (browser refused) must OUTLIVE the turn that started
+  // it, so it is bound only by the timeout, not the turn's abort signal. The
+  // blocking dance (browser opened) honours the signal so a cancelled turn
+  // tears it down.
+  const signal = browserOpened ? deps.signal : undefined;
+  const result = handle
+    .awaitResult({ signal, timeoutMs: deps.signInTimeoutMs })
+    .then(async (tok) => {
+      await deps.tokenStore.save(tok);
+      return tok;
+    });
+  // The background path has no awaiter — swallow so a later rejection can't
+  // surface as an unhandled rejection. The blocking path attaches its own
+  // `await`, which still observes the original rejection.
+  result.catch(() => {});
+
+  return { authorizeUrl: handle.authorizeUrl, browserOpened, result };
+}
+
+/**
  * Order of precedence: fresh stored access token > refresh > new OAuth dance.
+ *
+ * Returns a discriminated `TokenResolution`: a usable `token`, or — when a
+ * first-run dance is needed but the browser can't be opened on the gateway host
+ * — a `pending-signin` URL for the caller to surface (the background dance keeps
+ * listening and persists the token for the user's re-run).
  *
  * The plugin has no paste-token or env-var path — every install goes through
  * the OAuth flow at least once.
  */
 export async function resolveAccessToken(
   deps: ResolveAccessTokenDeps,
-): Promise<string> {
+): Promise<TokenResolution> {
   const log = deps.log ?? defaultLog;
   const stored = await deps.tokenStore.load();
   if (stored) {
     const expiresAt = stored.obtained_at + stored.expires_in;
     const now = Math.floor(Date.now() / 1000);
     if (now < expiresAt - REFRESH_LEAD_SECONDS) {
-      return stored.access_token;
+      return { kind: "token", accessToken: stored.access_token };
     }
     try {
       const refreshed = await singleFlight(`refresh:${deps.apiBaseUrl}`, () =>
         refreshAccessToken(deps.apiBaseUrl, stored.refresh_token),
       );
       await deps.tokenStore.save(refreshed);
-      return refreshed.access_token;
+      return { kind: "token", accessToken: refreshed.access_token };
     } catch (err) {
       log(
         "warn",
@@ -79,29 +173,17 @@ export async function resolveAccessToken(
     }
   }
 
-  const result = await singleFlight(`dance:${deps.apiBaseUrl}`, () =>
-    startOAuth({
-      apiBaseUrl: deps.apiBaseUrl,
-      scopes: DEFAULT_OAUTH_SCOPES,
-      signal: deps.signal,
-      signInTimeoutMs: deps.signInTimeoutMs,
-      onAuthorizeUrl: (url) => {
-        log(
-          "info",
-          [
-            "openclaw-deck: sign in to authorize this gateway.",
-            "Opening your browser… if it doesn't open, visit this URL:",
-            url, // flush-left, own line — copy-safe, no box/indent to mangle.
-          ].join("\n"),
-        );
-        // Fire-and-forget; 5s cap; headless/refused -> no-op (URL already printed).
-        void openBrowser(url);
-        deps.onAuthorizeUrl?.(url);
-      },
-    }),
+  const dance = await sharedDance(`dance:${deps.apiBaseUrl}`, () =>
+    startDance(deps),
   );
-  await deps.tokenStore.save(result);
-  return result.access_token;
+  if (dance.browserOpened) {
+    // Browser is up — block on the human exactly as before (one-shot safe).
+    const tok = await dance.result; // token already persisted inside startDance
+    return { kind: "token", accessToken: tok.access_token };
+  }
+  // Browser refused (headless/SSH/CI/no default browser): surface the URL now;
+  // the background dance keeps listening and persists the token for the re-run.
+  return { kind: "pending-signin", url: dance.authorizeUrl };
 }
 
 function defaultLog(level: LogLevel, message: string): void {

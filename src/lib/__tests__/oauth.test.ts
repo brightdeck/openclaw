@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  beginOAuth,
   cimdUrlFor,
   CIMD_URL,
   refreshAccessToken,
@@ -244,5 +245,80 @@ describe("startOAuth", () => {
     const redirectUri = new URL(capturedUrl).searchParams.get("redirect_uri")!;
     await expect(flowPromise).rejects.toThrow(/\[auth\.timeout\]/);
     await expectPortClosed(redirectUri);
+  });
+});
+
+describe("beginOAuth", () => {
+  let remoteMock: ReturnType<typeof vi.fn>;
+  let restore: () => void;
+
+  beforeEach(() => {
+    remoteMock = vi.fn();
+    restore = installFetchMock(remoteMock);
+  });
+
+  afterEach(() => {
+    restore();
+  });
+
+  it("emits the authorize URL synchronously, before any callback is awaited", async () => {
+    let emitted = "";
+    const handle = await beginOAuth({
+      apiBaseUrl: "https://api.brightdeck.ai",
+      scopes: ["presentation:read"],
+      onAuthorizeUrl: (u) => {
+        emitted = u;
+      },
+    });
+    expect(handle.authorizeUrl).toBe(emitted);
+    expect(handle.authorizeUrl).toMatch(
+      /^https:\/\/api\.brightdeck\.ai\/oauth\/authorize\?/,
+    );
+    // No token exchange happens just from begin.
+    expect(remoteMock).not.toHaveBeenCalled();
+
+    const redirectUri = new URL(handle.authorizeUrl).searchParams.get(
+      "redirect_uri",
+    )!;
+    handle.close();
+    await expectPortClosed(redirectUri);
+  });
+
+  it("awaitResult drives the dance to completion and tears the server down", async () => {
+    remoteMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          access_token: "at-b",
+          refresh_token: "rt-b",
+          expires_in: 600,
+          scope: "presentation:read",
+        }),
+        { status: 200 },
+      ),
+    );
+    const handle = await beginOAuth({
+      apiBaseUrl: "https://api.brightdeck.ai",
+      scopes: ["presentation:read"],
+    });
+    const params = new URL(handle.authorizeUrl).searchParams;
+    const redirectUri = params.get("redirect_uri")!;
+    const resultPromise = handle.awaitResult({ timeoutMs: 60_000 });
+    await fetch(`${redirectUri}?code=abc&state=${params.get("state")}`);
+    const result = await resultPromise;
+    expect(result.access_token).toBe("at-b");
+    await expectPortClosed(redirectUri);
+  });
+
+  it("close() abandons the dance without awaiting and frees the port", async () => {
+    const handle = await beginOAuth({
+      apiBaseUrl: "https://api.brightdeck.ai",
+      scopes: ["presentation:read"],
+    });
+    const redirectUri = new URL(handle.authorizeUrl).searchParams.get(
+      "redirect_uri",
+    )!;
+    handle.close();
+    await expectPortClosed(redirectUri);
+    expect(remoteMock).not.toHaveBeenCalled();
   });
 });

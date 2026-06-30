@@ -3,7 +3,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { ToolPluginExecutionContext } from "openclaw/plugin-sdk/tool-plugin";
 
 import { DECK_API_BASE_URL } from "../config.js";
-import { resolveAccessToken } from "./auth.js";
+import { resolveAccessToken, type TokenResolution } from "./auth.js";
 import { DeckClient, DeckMCPError } from "./deck-client.js";
 import { createTokenStore, type TokenStore } from "./token-store.js";
 
@@ -17,6 +17,8 @@ export interface ProxyExecuteOptions {
   signInTimeoutMs?: number;
   /** Test-only override; defaults to the real file-backed store. */
   createTokenStore?: (api: OpenClawPluginApi, apiBaseUrl: string) => TokenStore;
+  /** Test-only override; defaults to the real browser opener. */
+  openBrowser?: (url: string) => Promise<boolean>;
 }
 
 export interface ToolContentItem {
@@ -84,17 +86,39 @@ export function makeProxyExecute<S extends TSchema>(
     };
 
     let signInUrl: string | undefined;
-    const resolveToken = (): Promise<string> =>
+    const resolveToken = (): Promise<TokenResolution> =>
       resolveAccessToken({
         apiBaseUrl,
         tokenStore,
         signal: context.signal,
         signInTimeoutMs: options.signInTimeoutMs,
+        openBrowser: options.openBrowser,
         log: pluginLog,
         onAuthorizeUrl: (u) => {
           signInUrl = u;
         },
       });
+
+    // Browser could not be opened on the gateway host (headless/SSH/CI/no
+    // default browser). Surface the URL in the tool result so the model relays
+    // it to the user verbatim (the structured logger is suppressed in the chat
+    // TUI); the background dance keeps listening and persists the token.
+    const surfacePendingSignIn = (url: string): ProxyAgentToolResult => ({
+      content: [
+        {
+          type: "text",
+          text:
+            "Brightdeck needs you to sign in before this can run, but a " +
+            "browser could not be opened on the gateway host. Share this " +
+            "sign-in URL with the user verbatim and ask them to open it, " +
+            "finish signing in, then re-run the command:\n\n" +
+            url +
+            "\n\nOnce they finish, the next call reuses the stored " +
+            "credentials automatically.",
+        },
+      ],
+      details: { auth_pending: true, sign_in_url: url },
+    });
 
     const surfaceAuthFailure = (err: unknown): ProxyAgentToolResult => {
       const reason = err instanceof Error ? err.message : String(err);
@@ -108,7 +132,9 @@ export function makeProxyExecute<S extends TSchema>(
             text:
               `⚠️ Brightdeck sign-in did not complete (${reason}). ` +
               (signInUrl
-                ? "Open the sign-in URL that was printed/opened, finish signing in, then re-run this command."
+                ? "Share this sign-in URL with the user and ask them to finish " +
+                  "signing in, then re-run:\n\n" +
+                  signInUrl
                 : "Re-run this command to retry sign-in."),
           },
         ],
@@ -135,15 +161,18 @@ export function makeProxyExecute<S extends TSchema>(
       };
     };
 
-    let initialToken: string;
+    let initial: TokenResolution;
     try {
-      initialToken = await resolveToken();
+      initial = await resolveToken();
     } catch (err) {
       return surfaceAuthFailure(err);
     }
+    if (initial.kind === "pending-signin") {
+      return surfacePendingSignIn(initial.url);
+    }
 
     try {
-      return await callOnce(initialToken);
+      return await callOnce(initial.accessToken);
     } catch (err) {
       if (err instanceof DeckMCPError && err.code === "http.401") {
         pluginLog(
@@ -151,13 +180,16 @@ export function makeProxyExecute<S extends TSchema>(
           `openclaw-deck: MCP call returned 401 (${err.message}); clearing token and re-authorizing once`,
         );
         await tokenStore.clear();
-        let retryToken: string;
+        let retry: TokenResolution;
         try {
-          retryToken = await resolveToken();
+          retry = await resolveToken();
         } catch (authErr) {
           return surfaceAuthFailure(authErr);
         }
-        return await callOnce(retryToken);
+        if (retry.kind === "pending-signin") {
+          return surfacePendingSignIn(retry.url);
+        }
+        return await callOnce(retry.accessToken);
       }
       throw err;
     }

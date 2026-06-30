@@ -6,6 +6,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-30
+
+### Changed
+
+- **The sign-in URL is now surfaced by the agent, so it can never be truncated.**
+  Previously the first-run authorize URL was emitted only through the structured
+  logger — which the `openclaw chat` TUI suppresses, and which a raw terminal
+  write clips to a single line. Now, when the browser **can** be opened the dance
+  blocks as before (you just see the browser pop up); when it **can't** be opened
+  (headless / SSH / CI / no default browser / `DECK_NO_BROWSER=1`), the tool
+  returns immediately with the URL embedded in its result so the agent relays it
+  to you verbatim — soft-wrapped and clickable in the chat — and the loopback
+  listener keeps running in the background to capture the sign-in. Finish signing
+  in, then re-run the command; the stored token is reused automatically.
+- Browser auto-open is now **awaited** (not fire-and-forget) so the plugin knows
+  whether it actually opened and can fall back to surfacing the URL.
+- A failed/timed-out **local** sign-in now embeds the retry URL in its message
+  instead of only referencing it.
+
+### Fixed
+
+- Concurrent cold tool calls now share a single first-run dance end-to-end (one
+  loopback server, one URL) via a dance-wide single-flight guard — a quick re-run
+  joins the in-flight dance instead of spawning a second server.
+
+### Known limitation
+
+- On a **headless** host invoked as a **one-shot** (`openclaw agent --local`),
+  first-run sign-in can't complete: the process exits before the background
+  loopback captures the callback. Complete first-run sign-in from `openclaw chat`
+  or a connected gateway (a long-lived process); afterwards one-shot calls reuse
+  the stored token. The local-GUI path (browser auto-opens, dance blocks) is
+  unaffected.
+
+### Release tooling
+
+- Added `scripts/check-version-sync.mjs` (run via `pnpm run check-version`, wired
+  into `prepublishOnly`): fails the build unless `package.json`, `src/config.ts`
+  `PLUGIN_VERSION`, the version baked into `dist/index.js`, and the generated
+  `openclaw.plugin.json` all match. This catches a stale bundle being published
+  under a new version number — the failure mode behind the broken 0.3.0 release.
+  Run it by hand before `clawhub package publish` (ClawHub runs no lifecycle
+  scripts).
+
 ## [0.3.1] — 2026-06-30
 
 ### Fixed
