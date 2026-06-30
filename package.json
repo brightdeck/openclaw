@@ -1,6 +1,6 @@
 {
   "name": "@brightdeck/openclaw-deck",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "OpenClaw plugin for deck — manage presentations on api.brightdeck.ai",
   "type": "module",
   "main": "./dist/index.js",
@@ -15,6 +15,7 @@
   "scripts": {
     "build": "rm -rf dist openclaw.plugin.json && tsc --emitDeclarationOnly && node scripts/build.mjs && openclaw plugins build --entry ./dist/index.js",
     "validate": "openclaw plugins validate --entry ./dist/index.js",
+    "prepublishOnly": "pnpm run build && pnpm run validate",
     "watch": "tsc --watch",
     "lint": "eslint src",
     "test": "vitest run",

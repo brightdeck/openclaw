@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-06-30
+
+### Fixed
+
+- Bundled `openclaw.plugin.json` manifest version now matches `package.json`.
+  The published 0.3.0 tarball shipped a stale `0.2.1` manifest because the
+  generated (gitignored) manifest was not regenerated before publish. The
+  release build now regenerates and validates the manifest on every publish
+  (`prepublishOnly`), so the package and manifest versions can no longer drift.
+  No functional change to tools or auth.
+
 ## [0.3.0] — 2026-06-29
 
 ### Added
